@@ -6,7 +6,7 @@ App(
     stack_size=8 * 1024,
     requires=["gui"],
     fap_icon="app.png",
-    fap_category="GPIO",
+    fap_category="RFID",
     fap_icon_assets="icons",
     fap_icon_assets_symbol="simultaneous_rfid_reader",
     fap_author="@RileyHaffner",

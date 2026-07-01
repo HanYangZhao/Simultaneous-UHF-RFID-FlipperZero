@@ -66,7 +66,7 @@ void view_config_alloc(UHFReaderApp* App) {
     App->Setting1ConfigLabel = "Connection";
     App->Setting2ConfigLabel = "Power Level";
     App->Setting2EntryText = "Enter Value In Range 0-2700";
-    App->Setting2DefaultValue = "2000";
+    App->Setting2DefaultValue = "1500";
     App->Setting3Values[0] = 1;
     App->Setting3Values[1] = 2;
     App->Setting3Names[0] = "Internal";
@@ -87,11 +87,11 @@ void view_config_alloc(UHFReaderApp* App) {
     App->SettingModuleValues[0] = 1;
     App->SettingModuleValues[1] = 2;
     App->SettingModuleValues[2] = 3;
-    App->SettingModuleNames[0] = "M6e";
-    App->SettingModuleNames[1] = "YRM100";
+    App->SettingModuleNames[0] = "YRM100";
+    App->SettingModuleNames[1] = "M6e";
     App->SettingModuleNames[2] = "M7e";
     App->SettingModuleConfigLabel = "UHF Module";
-    App->UHFModuleType = M6E_NANO_MODULE;
+    App->UHFModuleType = YRM100X_MODULE;
 
     App->SettingSavingValues[0] = 1;
     App->SettingSavingValues[1] = 2;
@@ -480,49 +480,64 @@ void uhf_reader_module_setting_change(VariableItem* Item) {
 
     variable_item_set_current_value_text(Item, App->SettingModuleNames[Index]);
 
-    if(Index == 1) {
+    if(Index == 0) {
         //Mark the YRM100X as being used
         App->UHFModuleType = YRM100X_MODULE;
 
-        //Free regular uart worker
-        uart_helper_free(App->UartHelper);
+        //Free regular uart worker when switching from M6e/M7e.
+        if(App->UartHelper) {
+            uart_helper_free(App->UartHelper);
+            App->UartHelper = NULL;
+        }
 
-        //Create a UART worker for the YRM100X module
-        App->YRM100XWorker = uhf_worker_alloc();
-        UHFTagWrapper* WorkerTagWrapper = uhf_tag_wrapper_alloc();
-        App->YRM100XWorker->uhf_tag_wrapper = WorkerTagWrapper;
-        m100_disable_write_mask(App->YRM100XWorker->module, WRITE_EPC);
+        //Create a UART worker for the YRM100X module if needed.
+        if(!App->YRM100XWorker) {
+            App->YRM100XWorker = uhf_worker_alloc();
+            UHFTagWrapper* WorkerTagWrapper = uhf_tag_wrapper_alloc();
+            App->YRM100XWorker->uhf_tag_wrapper = WorkerTagWrapper;
+            m100_disable_write_mask(App->YRM100XWorker->module, WRITE_EPC);
+        }
 
     } else if(Index == 2) {
         //Freeing the YRM100X uart helper
-        if(App->UHFModuleType == YRM100X_MODULE) {
+        if(App->YRM100XWorker) {
             //Free Tag Wrapper
-            uhf_tag_wrapper_free(App->YRM100XWorker->uhf_tag_wrapper);
+            if(App->YRM100XWorker->uhf_tag_wrapper) {
+                uhf_tag_wrapper_free(App->YRM100XWorker->uhf_tag_wrapper);
+            }
 
             //Freeing yrm100x worker
             uhf_worker_stop(App->YRM100XWorker);
             uhf_worker_free(App->YRM100XWorker);
+            App->YRM100XWorker = NULL;
         }
         //Mark the M7E as being used
-        App->UartHelper = uart_helper_alloc();
-        uart_helper_set_delimiter(App->UartHelper, LINE_DELIMITER, INCLUDE_LINE_DELIMITER);
-        uart_helper_set_callback(App->UartHelper, uart_demo_process_line, App);
+        if(!App->UartHelper) {
+            App->UartHelper = uart_helper_alloc();
+            uart_helper_set_delimiter(App->UartHelper, LINE_DELIMITER, INCLUDE_LINE_DELIMITER);
+            uart_helper_set_callback(App->UartHelper, uart_demo_process_line, App);
+        }
         App->UHFModuleType = M7E_HECTO_MODULE;
     } else {
         //Freeing the YRM100X uart helper
-        if(App->UHFModuleType == YRM100X_MODULE) {
+        if(App->YRM100XWorker) {
             //Free Tag Wrapper
-            uhf_tag_wrapper_free(App->YRM100XWorker->uhf_tag_wrapper);
+            if(App->YRM100XWorker->uhf_tag_wrapper) {
+                uhf_tag_wrapper_free(App->YRM100XWorker->uhf_tag_wrapper);
+            }
 
             //Freeing yrm100x worker
             uhf_worker_stop(App->YRM100XWorker);
             uhf_worker_free(App->YRM100XWorker);
+            App->YRM100XWorker = NULL;
         }
 
         //Mark the M6E as being used
-        App->UartHelper = uart_helper_alloc();
-        uart_helper_set_delimiter(App->UartHelper, LINE_DELIMITER, INCLUDE_LINE_DELIMITER);
-        uart_helper_set_callback(App->UartHelper, uart_demo_process_line, App);
+        if(!App->UartHelper) {
+            App->UartHelper = uart_helper_alloc();
+            uart_helper_set_delimiter(App->UartHelper, LINE_DELIMITER, INCLUDE_LINE_DELIMITER);
+            uart_helper_set_callback(App->UartHelper, uart_demo_process_line, App);
+        }
         App->UHFModuleType = M6E_NANO_MODULE;
     }
 }

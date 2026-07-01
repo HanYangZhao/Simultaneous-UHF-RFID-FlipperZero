@@ -69,7 +69,7 @@ void main_menu_alloc(UHFReaderApp* App) {
 */
 static UHFReaderApp* uhf_reader_app_alloc() {
     //Allocating storage for the saved_epcs and index file
-    UHFReaderApp* App = (UHFReaderApp*)malloc(sizeof(UHFReaderApp));
+    UHFReaderApp* App = (UHFReaderApp*)calloc(1, sizeof(UHFReaderApp));
     Storage* Storage = furi_record_open(RECORD_STORAGE);
     FlipperFormat* File = flipper_format_file_alloc(Storage);
     FlipperFormat* IndexFile = flipper_format_file_alloc(Storage);
@@ -85,7 +85,7 @@ static UHFReaderApp* uhf_reader_app_alloc() {
     App->EpcToSave = (char*)malloc(25);
     App->NumberOfEpcsToRead = 0;
 
-    //Initializing the indices for each array and the file name 
+    //Initializing the indices for each array and the file name
     App->NameSize = 36;
     App->NameSizeParse = 27;
     App->CurEpcIndex = 26;
@@ -93,7 +93,7 @@ static UHFReaderApp* uhf_reader_app_alloc() {
     App->CurResIndex = 1;
     App->CurMemIndex = 1;
     App->FileName = (char*)malloc(App->NameSize);
-    
+
     //Creating the initial GUI
     Gui* Gui = furi_record_open(RECORD_GUI);
     App->ViewDispatcher = view_dispatcher_alloc();
@@ -120,12 +120,20 @@ static UHFReaderApp* uhf_reader_app_alloc() {
 #ifdef BACKLIGHT_ON
     notification_message(App->Notifications, &sequence_display_backlight_enforce_on);
 #endif
-    //Create the UART helper object used to communicate with the RPi Zero via UART
-    App->UartHelper = uart_helper_alloc();
-    uart_helper_set_baud_rate(App->UartHelper, DEVICE_BAUDRATE);
-    uart_helper_set_delimiter(App->UartHelper, LINE_DELIMITER, INCLUDE_LINE_DELIMITER);
-    uart_helper_set_callback(App->UartHelper, uart_demo_process_line, App);
-    
+    // Initialize module transport based on the default selected module.
+    if(App->UHFModuleType == YRM100X_MODULE) {
+        App->YRM100XWorker = uhf_worker_alloc();
+        UHFTagWrapper* WorkerTagWrapper = uhf_tag_wrapper_alloc();
+        App->YRM100XWorker->uhf_tag_wrapper = WorkerTagWrapper;
+        m100_disable_write_mask(App->YRM100XWorker->module, WRITE_EPC);
+    } else {
+        //Create the UART helper object used to communicate with the RPi Zero via UART
+        App->UartHelper = uart_helper_alloc();
+        uart_helper_set_baud_rate(App->UartHelper, DEVICE_BAUDRATE);
+        uart_helper_set_delimiter(App->UartHelper, LINE_DELIMITER, INCLUDE_LINE_DELIMITER);
+        uart_helper_set_callback(App->UartHelper, uart_demo_process_line, App);
+    }
+
     return App;
 }
 
@@ -142,21 +150,22 @@ static void uhf_reader_app_free(UHFReaderApp* App) {
     furi_record_close(RECORD_NOTIFICATION);
     furi_record_close(RECORD_STORAGE);
     furi_record_close(RECORD_GUI);
-    
+
     //Freeing the UART helper
-    if(App->UHFModuleType != YRM100X_MODULE){
+    if(App->UartHelper) {
         uart_helper_free(App->UartHelper);
     }
-    else{
-        //Free Tag Wrapper
-        uhf_tag_wrapper_free(App->YRM100XWorker->uhf_tag_wrapper);
 
-        //Freeing yrm100x worker 
+    if(App->YRM100XWorker) {
+        //Free Tag Wrapper
+        if(App->YRM100XWorker->uhf_tag_wrapper) {
+            uhf_tag_wrapper_free(App->YRM100XWorker->uhf_tag_wrapper);
+        }
+
+        //Freeing yrm100x worker
         uhf_worker_stop(App->YRM100XWorker);
         uhf_worker_free(App->YRM100XWorker);
     }
-    
-    
 
     //Freeing all views, widgets, and menus
     view_delete_free(App);
@@ -171,7 +180,7 @@ static void uhf_reader_app_free(UHFReaderApp* App) {
     view_tag_actions_free(App);
     view_lock_free(App);
     view_kill_free(App);
-    
+
     //Freeing the main menu view
     view_dispatcher_remove_view(App->ViewDispatcher, UHFReaderViewSubmenu);
     submenu_free(App->Submenu);
@@ -200,14 +209,14 @@ int32_t main_uhf_reader_app(void* _p) {
     UNUSED(_p);
     Expansion* expansion = furi_record_open(RECORD_EXPANSION);
     expansion_disable(expansion);
-    
+
     bool PowerOn = false;
-    
+
     if(!furi_hal_power_is_otg_enabled()) {
         furi_hal_power_enable_otg();
         PowerOn = true;
     }
-    
+
     UHFReaderApp* App = uhf_reader_app_alloc();
     view_dispatcher_run(App->ViewDispatcher);
 
