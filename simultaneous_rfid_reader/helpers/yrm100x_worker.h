@@ -10,7 +10,7 @@
  * @author modified by haffnerriley
 */
 
-#define UHF_WORKER_STACK_SIZE 1 * 1024
+#define UHF_WORKER_STACK_SIZE 2 * 1024
 
 typedef enum {
     // Init states
