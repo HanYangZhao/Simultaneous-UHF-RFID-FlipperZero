@@ -1,6 +1,9 @@
 #include "yrm100x_module.h"
 #include "yrm100x_module_cmd.h"
 #include "saved_epc_functions.h"
+#include <furi.h>
+
+static const char* UHF_MOD_TAG = "UHF_MOD";
 
 /**
  * File that handles the YRM100 module
@@ -19,7 +22,9 @@ static M100ResponseType setup_and_send_rx(M100Module* module, uint8_t* cmd, size
     // send cmd
     uhf_uart_send_wait(uart, cmd, cmd_length);
     // wait for response by polling
+    int tick_count = 0;
     while(!uhf_is_buffer_closed(buffer) && !uhf_uart_tick(uart)) {
+        tick_count++;
     }
     // reset tick
     uhf_uart_tick_reset(uart);
@@ -27,11 +32,32 @@ static M100ResponseType setup_and_send_rx(M100Module* module, uint8_t* cmd, size
     uint8_t* data = uhf_buffer_get_data(buffer);
     size_t length = uhf_buffer_get_size(buffer);
     // check if size > 0
-    if(!length) return M100EmptyResponse;
+    if(!length) {
+        FURI_LOG_D(UHF_MOD_TAG, "Response: empty (waited %d ticks)", tick_count);
+        return M100EmptyResponse;
+    }
     // check if data is valid
-    if(data[0] != FRAME_START || data[length - 1] != FRAME_END) return M100ValidationFail;
+    if(data[0] != FRAME_START || data[length - 1] != FRAME_END) {
+        FURI_LOG_W(
+            UHF_MOD_TAG,
+            "Response: validation fail, len=%d, first=0x%02X, last=0x%02X (waited %d ticks)",
+            length,
+            data[0],
+            data[length - 1],
+            tick_count);
+        return M100ValidationFail;
+    }
     // check if checksum is correct
-    if(checksum(data + 1, length - 3) != data[length - 2]) return M100ChecksumFail;
+    if(checksum(data + 1, length - 3) != data[length - 2]) {
+        FURI_LOG_W(
+            UHF_MOD_TAG,
+            "Response: checksum fail, len=%d, expected=0x%02X, got=0x%02X",
+            length,
+            data[length - 2],
+            checksum(data + 1, length - 3));
+        return M100ChecksumFail;
+    }
+    FURI_LOG_D(UHF_MOD_TAG, "Response: OK, len=%d", length);
     return M100SuccessResponse;
 }
 
@@ -279,120 +305,116 @@ M100ResponseType m100_read_label_data_storage(
     return M100SuccessResponse;
 }
 
-
 //Created by William Riley Haffner (haffnerriley)
-//Function that handles creating the lock parameter bytes in the lock payload 
+//Function that handles creating the lock parameter bytes in the lock payload
 //Follows the Gen2 Standards: https://www.gs1.org/sites/default/files/docs/epc/Gen2_Protocol_Standard.pdf
-uint32_t get_lock_param(uint32_t lock_param, BankType bank, LockType lockfunction){
-
-    if(lockfunction == Lock){
-        switch (bank) {
-            case KillPwd:
-                lock_param = 0x80200;
-                break;
-            case AccessPwd:
-                lock_param = 0x20080;
-                break;
-            case EPCBank:
-                lock_param = 0x08020;
-                break;
-            case TIDBank:
-                lock_param = 0x02008;
-                break;
-            case FileZero:
-                lock_param = 0x00802;
-                break;
-            default:
-                return 0x02008;
+uint32_t get_lock_param(uint32_t lock_param, BankType bank, LockType lockfunction) {
+    if(lockfunction == Lock) {
+        switch(bank) {
+        case KillPwd:
+            lock_param = 0x80200;
+            break;
+        case AccessPwd:
+            lock_param = 0x20080;
+            break;
+        case EPCBank:
+            lock_param = 0x08020;
+            break;
+        case TIDBank:
+            lock_param = 0x02008;
+            break;
+        case FileZero:
+            lock_param = 0x00802;
+            break;
+        default:
+            return 0x02008;
         }
-    }
-    else if(lockfunction == PermaLock){
-        switch (bank) {
-            case KillPwd:
-                lock_param = 0xC0300;
-                break;
-            case AccessPwd:
-                lock_param = 0x300C0;
-                break;
-            case EPCBank:
-                lock_param = 0x0C030;
-                break;
-            case TIDBank:
-                lock_param = 0x0300C;
-                break;
-            case FileZero:
-                lock_param = 0x00C03;
-                break;
-            default:
-                return 0x300C0;
+    } else if(lockfunction == PermaLock) {
+        switch(bank) {
+        case KillPwd:
+            lock_param = 0xC0300;
+            break;
+        case AccessPwd:
+            lock_param = 0x300C0;
+            break;
+        case EPCBank:
+            lock_param = 0x0C030;
+            break;
+        case TIDBank:
+            lock_param = 0x0300C;
+            break;
+        case FileZero:
+            lock_param = 0x00C03;
+            break;
+        default:
+            return 0x300C0;
         }
-    }
-    else if (lockfunction == PermaUnlock){
-        switch (bank) {
-            case KillPwd:
-                lock_param = 0x40100;
-                break;
-            case AccessPwd:
-                lock_param = 0x10040;
-                break;
-            case EPCBank:
-                lock_param = 0x04010;
-                break;
-            case TIDBank:
-                lock_param = 0x01004;
-                break;
-            case FileZero:
-                lock_param = 0x00401;
-                break;
-            default:
-                return 0x10040;
+    } else if(lockfunction == PermaUnlock) {
+        switch(bank) {
+        case KillPwd:
+            lock_param = 0x40100;
+            break;
+        case AccessPwd:
+            lock_param = 0x10040;
+            break;
+        case EPCBank:
+            lock_param = 0x04010;
+            break;
+        case TIDBank:
+            lock_param = 0x01004;
+            break;
+        case FileZero:
+            lock_param = 0x00401;
+            break;
+        default:
+            return 0x10040;
         }
-    }
-    else {
-        switch (bank) {
-            case KillPwd:
-                lock_param = 0xC0000;
-                break;
-            case AccessPwd:
-                lock_param = 0x30000;
-                break;
-            case EPCBank:
-                lock_param = 0x0C000;
-                break;
-            case TIDBank:
-                lock_param = 0x03000;
-                break;
-            case FileZero:
-                lock_param = 0x00C00;
-                break;
-            default:
-                return 0x30000;
+    } else {
+        switch(bank) {
+        case KillPwd:
+            lock_param = 0xC0000;
+            break;
+        case AccessPwd:
+            lock_param = 0x30000;
+            break;
+        case EPCBank:
+            lock_param = 0x0C000;
+            break;
+        case TIDBank:
+            lock_param = 0x03000;
+            break;
+        case FileZero:
+            lock_param = 0x00C00;
+            break;
+        default:
+            return 0x30000;
         }
     }
 
     return lock_param;
-
-
 }
 //Created by William Riley Haffner
 //Handles locking the uhf tag
-M100ResponseType m100_lock_label_data(M100Module* module, BankType bank, uint32_t access_pwd, LockType lockfunction) {
+M100ResponseType m100_lock_label_data(
+    M100Module* module,
+    BankType bank,
+    uint32_t access_pwd,
+    LockType lockfunction) {
     uint8_t cmd[MAX_BUFFER_SIZE];
     size_t cmd_length = CMD_LOCK_LABEL_DATA_STORE.length;
     uint32_t lock_param = 0;
     memcpy(cmd, CMD_LOCK_LABEL_DATA_STORE.cmd, cmd_length);
-    
+
     cmd[5] = (access_pwd >> 24) & 0xFF;
     cmd[6] = (access_pwd >> 16) & 0xFF;
     cmd[7] = (access_pwd >> 8) & 0xFF;
     cmd[8] = access_pwd & 0xFF;
 
     lock_param = get_lock_param(lock_param, bank, lockfunction);
-    
+
     cmd[9] = (lock_param >> 16) & 0xFF;
     cmd[10] = (lock_param >> 8) & 0xFF;
     cmd[11] = lock_param & 0xFF;
-
 
     // Calculate checksum
     cmd[cmd_length - 2] = checksum(cmd + 1, cmd_length - 3);
@@ -411,13 +433,14 @@ M100ResponseType m100_lock_label_data(M100Module* module, BankType bank, uint32_
     uint16_t payload_len = data[3];
     payload_len = (payload_len << 8) + data[4];
 
-
-    //Need to add a check here for an incorrect password. Look for an error code of some sort 
+    //Need to add a check here for an incorrect password. Look for an error code of some sort
     if(rtn_command == 0xFF) {
-        if(payload_len == 0x01) return M100NoTagResponse;
-       
-        else if(data[2] == 0xFF && (payload_len == 16 && data[5] == 0x16)) return M100APWrong;
-        
+        if(payload_len == 0x01)
+            return M100NoTagResponse;
+
+        else if(data[2] == 0xFF && (payload_len == 16 && data[5] == 0x16))
+            return M100APWrong;
+
         return M100MemoryOverrun;
     }
 
@@ -425,9 +448,8 @@ M100ResponseType m100_lock_label_data(M100Module* module, BankType bank, uint32_
 }
 
 //Created by William Riley Haffner (haffnerriley)
-//Kills the tag 
+//Kills the tag
 M100ResponseType m100_kill_tag(M100Module* module, uint32_t kill_pwd) {
-
     uint8_t cmd[MAX_BUFFER_SIZE];
     size_t cmd_length = CMD_INACTIVATE_KILL_TAG.length;
     memcpy(cmd, CMD_INACTIVATE_KILL_TAG.cmd, cmd_length);
@@ -455,8 +477,10 @@ M100ResponseType m100_kill_tag(M100Module* module, uint32_t kill_pwd) {
     payload_len = (payload_len << 8) + data[4];
 
     if(rtn_command == 0xFF) {
-        if(payload_len == 0x01) return M100NoTagResponse;
-        else if(data[2] == 0xFF && (payload_len == 16 && data[5] == 0x12)) return M100APWrong;
+        if(payload_len == 0x01)
+            return M100NoTagResponse;
+        else if(data[2] == 0xFF && (payload_len == 16 && data[5] == 0x12))
+            return M100APWrong;
         return M100MemoryOverrun;
     }
 
@@ -477,8 +501,7 @@ M100ResponseType m100_write_label_data_storage(
     uint16_t payload_len = 9;
     uint16_t data_length = 0;
     if(bank == ReservedBank) {
-        
-        //Handles writing the access password and uses the saved password 
+        //Handles writing the access password and uses the saved password
         if(source_address == 32) {
             source_address = 0;
             payload_len += 8;

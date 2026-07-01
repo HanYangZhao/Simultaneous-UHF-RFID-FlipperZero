@@ -1,5 +1,8 @@
 #include "yrm100x_tag.h"
 #include "yrm100x_worker.h"
+#include <furi.h>
+
+static const char* UHF_WK_TAG = "UHF_WK";
 
 /**
  * File that handles the worker for the YRM100
@@ -9,11 +12,22 @@
 
 // yrm100 module commands
 UHFWorkerEvent verify_module_connected(UHFWorker* uhf_worker) {
+    FURI_LOG_I(UHF_WK_TAG, "Verifying module connection...");
     char* hw_version = m100_get_hardware_version(uhf_worker->module);
     char* sw_version = m100_get_software_version(uhf_worker->module);
     char* manufacturer = m100_get_manufacturers(uhf_worker->module);
     // verify all data exists
-    if(hw_version == NULL || sw_version == NULL || manufacturer == NULL) return UHFWorkerEventFail;
+    if(hw_version == NULL || sw_version == NULL || manufacturer == NULL) {
+        FURI_LOG_E(UHF_WK_TAG, "Module verification failed - missing info");
+        FURI_LOG_E(
+            UHF_WK_TAG,
+            "HW: %s, SW: %s, Mfg: %s",
+            hw_version ? hw_version : "NULL",
+            sw_version ? sw_version : "NULL",
+            manufacturer ? manufacturer : "NULL");
+        return UHFWorkerEventFail;
+    }
+    FURI_LOG_I(UHF_WK_TAG, "Module OK - HW:%s SW:%s Mfg:%s", hw_version, sw_version, manufacturer);
     return UHFWorkerEventSuccess;
 }
 
@@ -21,13 +35,20 @@ UHFTag* send_polling_command(UHFWorker* uhf_worker) {
     // read epc bank
     UHFTag* uhf_tag = uhf_tag_alloc();
     M100ResponseType status;
+    int poll_attempts = 0;
     do {
         if(uhf_worker->state == UHFWorkerStateStop) {
+            FURI_LOG_I(UHF_WK_TAG, "Polling aborted by user");
             uhf_tag_free(uhf_tag);
             return NULL;
         }
+        poll_attempts++;
         status = m100_single_poll(uhf_worker->module, uhf_tag);
+        if(poll_attempts % 10 == 0) {
+            FURI_LOG_I(UHF_WK_TAG, "Polling attempt %d, status=%d", poll_attempts, (int)status);
+        }
     } while(status != M100SuccessResponse);
+    FURI_LOG_I(UHF_WK_TAG, "Tag polled successfully after %d attempts", poll_attempts);
     return uhf_tag;
 }
 
@@ -36,20 +57,45 @@ UHFWorkerEvent read_bank_till_max_length(UHFWorker* uhf_worker, UHFTag* uhf_tag,
     unsigned int word_low = 0, word_high = 64;
     unsigned int word_size;
     M100ResponseType status;
+    int iterations = 0;
+    FURI_LOG_I(UHF_WK_TAG, "Reading bank %d, binary search: 0-64 words", (int)bank);
     do {
-        if(uhf_worker->state == UHFWorkerStateStop) return UHFWorkerEventAborted;
-        if(word_low >= word_high) return UHFWorkerEventSuccess;
+        if(uhf_worker->state == UHFWorkerStateStop) {
+            FURI_LOG_I(UHF_WK_TAG, "Bank read aborted by user");
+            return UHFWorkerEventAborted;
+        }
+        if(word_low >= word_high) {
+            FURI_LOG_I(UHF_WK_TAG, "Bank read complete: %d words", word_low);
+            return UHFWorkerEventSuccess;
+        }
         word_size = (word_low + word_high) / 2;
-        
+        iterations++;
+
+        FURI_LOG_I(
+            UHF_WK_TAG,
+            "Bank %d: try word_size=%d (range %d-%d), iter=%d",
+            (int)bank,
+            word_size,
+            word_low,
+            word_high,
+            iterations);
+
         status = m100_read_label_data_storage(
-            uhf_worker->module,
-            uhf_tag,
-            bank,
-            uhf_worker->DefaultAP,
-            word_size); 
+            uhf_worker->module, uhf_tag, bank, uhf_worker->DefaultAP, word_size);
+        FURI_LOG_I(UHF_WK_TAG, "Bank %d: read status=%d", (int)bank, (int)status);
+
         if(status == M100SuccessResponse) {
             word_low = word_size + 1;
         } else if(status == M100MemoryOverrun) {
+            word_high = word_size - 1;
+        } else {
+            // Any other response (EmptyResponse, ValidationFail, ChecksumFail, etc.)
+            // is treated as the limit, exit the binary search
+            FURI_LOG_I(
+                UHF_WK_TAG,
+                "Bank %d: unexpected status=%d, treating as limit",
+                (int)bank,
+                (int)status);
             word_high = word_size - 1;
         }
     } while(true);
@@ -58,35 +104,68 @@ UHFWorkerEvent read_bank_till_max_length(UHFWorker* uhf_worker, UHFTag* uhf_tag,
 
 //Modified by Riley Haffner to read the reserved bank using the default AP set by the user
 UHFWorkerEvent read_single_card(UHFWorker* uhf_worker) {
+    FURI_LOG_I(UHF_WK_TAG, "=== Starting read_single_card ===");
     UHFTag* uhf_tag = send_polling_command(uhf_worker);
-    if(uhf_tag == NULL) return UHFWorkerEventAborted;
-    uhf_tag_wrapper_set_tag(uhf_worker->uhf_tag_wrapper, uhf_tag);
-    // set select
-    while(m100_set_select(uhf_worker->module, uhf_tag) != M100SuccessResponse) {
+    if(uhf_tag == NULL) {
+        FURI_LOG_I(UHF_WK_TAG, "read_single_card: poll returned NULL");
+        return UHFWorkerEventAborted;
     }
-    // read tid
+    uhf_tag_wrapper_set_tag(uhf_worker->uhf_tag_wrapper, uhf_tag);
 
-    //create a default password attribute for the worker....
+    // set select with stop check
+    FURI_LOG_I(UHF_WK_TAG, "Calling m100_set_select...");
+    M100ResponseType set_status;
+    int set_attempts = 0;
+    do {
+        if(uhf_worker->state == UHFWorkerStateStop) {
+            FURI_LOG_I(UHF_WK_TAG, "set_select aborted by user");
+            return UHFWorkerEventAborted;
+        }
+        set_attempts++;
+        set_status = m100_set_select(uhf_worker->module, uhf_tag);
+        if(set_attempts % 10 == 0) {
+            FURI_LOG_I(
+                UHF_WK_TAG, "set_select attempt %d, status=%d", set_attempts, (int)set_status);
+        }
+    } while(set_status != M100SuccessResponse);
+    FURI_LOG_I(UHF_WK_TAG, "set_select succeeded after %d attempts", set_attempts);
+
+    // read tid
+    FURI_LOG_I(UHF_WK_TAG, "Reading TID bank...");
     UHFWorkerEvent event;
     event = read_bank_till_max_length(uhf_worker, uhf_tag, TIDBank);
-    if(event != UHFWorkerEventSuccess) return event;
+    if(event != UHFWorkerEventSuccess) {
+        FURI_LOG_I(UHF_WK_TAG, "TID read failed: %d", (int)event);
+        return event;
+    }
+
     // read user
+    FURI_LOG_I(UHF_WK_TAG, "Reading User bank...");
     event = read_bank_till_max_length(uhf_worker, uhf_tag, UserBank);
-    if(event != UHFWorkerEventSuccess) return event;
+    if(event != UHFWorkerEventSuccess) {
+        FURI_LOG_I(UHF_WK_TAG, "User read failed: %d", (int)event);
+        return event;
+    }
+
+    // read reserved
+    FURI_LOG_I(UHF_WK_TAG, "Reading Reserved bank...");
     event = read_bank_till_max_length(uhf_worker, uhf_tag, ReservedBank);
-    if(event != UHFWorkerEventSuccess) return event;
+    if(event != UHFWorkerEventSuccess) {
+        FURI_LOG_I(UHF_WK_TAG, "Reserved read failed: %d", (int)event);
+        return event;
+    }
+
+    FURI_LOG_I(UHF_WK_TAG, "=== read_single_card complete ===");
     return UHFWorkerEventSuccess;
 }
 
 //Modified by Riley Haffner to be able to write to the reserved bank
 UHFWorkerEvent write_single_card(UHFWorker* uhf_worker) {
     //uhf_worker->TagToWrite
-    UHFTag* uhf_tag_des = send_polling_command(
-        uhf_worker); 
+    UHFTag* uhf_tag_des = send_polling_command(uhf_worker);
     if(uhf_tag_des == NULL) return UHFWorkerEventAborted;
-    
-    UHFTag* uhf_tag_from =
-        uhf_worker->NewTag; 
+
+    UHFTag* uhf_tag_from = uhf_worker->NewTag;
     M100ResponseType rp_type;
     do {
         rp_type = m100_set_select(uhf_worker->module, uhf_tag_des);
@@ -130,36 +209,32 @@ UHFWorkerEvent write_single_card(UHFWorker* uhf_worker) {
         }
     }
     while(m100_is_write_mask_enabled(uhf_worker->module, WRITE_RFU)) {
+        if(uhf_worker->KillPwd && uhf_worker->AccessPwd) {
+            rp_type = m100_write_label_data_storage(
+                uhf_worker->module,
+                uhf_tag_from,
+                uhf_tag_des,
+                ReservedBank,
+                1,
+                uhf_worker->DefaultAP);
+        } else if(uhf_worker->KillPwd) {
+            rp_type = m100_write_label_data_storage(
+                uhf_worker->module,
+                uhf_tag_from,
+                uhf_tag_des,
+                ReservedBank,
+                0,
+                uhf_worker->DefaultAP);
+        } else if(uhf_worker->AccessPwd) {
+            rp_type = m100_write_label_data_storage(
+                uhf_worker->module,
+                uhf_tag_from,
+                uhf_tag_des,
+                ReservedBank,
+                32,
+                uhf_worker->DefaultAP);
+        }
 
-        if(uhf_worker->KillPwd && uhf_worker->AccessPwd){
-            rp_type = m100_write_label_data_storage(
-            uhf_worker->module,
-            uhf_tag_from,
-            uhf_tag_des,
-            ReservedBank,
-            1,
-            uhf_worker->DefaultAP);
-        }
-        else if(uhf_worker->KillPwd){
-            rp_type = m100_write_label_data_storage(
-            uhf_worker->module,
-            uhf_tag_from,
-            uhf_tag_des,
-            ReservedBank,
-            0,
-            uhf_worker->DefaultAP);
-        }
-        else if (uhf_worker->AccessPwd){
-        rp_type = m100_write_label_data_storage(
-            uhf_worker->module,
-            uhf_tag_from,
-            uhf_tag_des,
-            ReservedBank,
-            32,
-            uhf_worker->DefaultAP); 
-            }
-            
-           
         if(uhf_worker->state == UHFWorkerStateStop) {
             m100_disable_write_mask(uhf_worker->module, WRITE_RFU);
             return UHFWorkerEventAborted;
@@ -168,7 +243,7 @@ UHFWorkerEvent write_single_card(UHFWorker* uhf_worker) {
             m100_disable_write_mask(uhf_worker->module, WRITE_RFU);
             break;
         }
-        if(rp_type == M100APWrong){
+        if(rp_type == M100APWrong) {
             m100_disable_write_mask(uhf_worker->module, WRITE_RFU);
             return UHFWorkerEventAborted;
         }
