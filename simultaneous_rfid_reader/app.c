@@ -82,7 +82,7 @@ static UHFReaderApp* uhf_reader_app_alloc() {
     App->TidValues = (char**)malloc(50 * 41);
     App->ResValues = (char**)malloc(50 * 17);
     App->MemValues = (char**)malloc(50 * 33);
-    App->EpcToSave = (char*)malloc(25);
+    App->EpcToSave = (char*)malloc(25); //96-bit EPC → 24 hex chars + \0
     App->NumberOfEpcsToRead = 0;
 
     //Initializing the indices for each array and the file name

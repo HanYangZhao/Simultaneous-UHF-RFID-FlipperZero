@@ -12,7 +12,9 @@
 */
 
 
-#define MAX_BANK_SIZE 200
+#define EPC_MAX_BANK_SIZE  32   // 96-bit EPC = 12 B; 256-bit EPC = 32 B (very generous)
+#define TID_MAX_BANK_SIZE  32   // standard TID 8–16 B; extended up to 32 B
+#define USER_MAX_BANK_SIZE 64   // Gen2 standard user memory ≤ 64 B
 // storage enum
 typedef enum { ReservedBank, EPCBank, TIDBank, UserBank, KillPwd, AccessPwd, FileZero} BankType;
 
@@ -27,7 +29,7 @@ typedef struct {
 // EPC Memory Bank
 typedef struct {
     size_t size; // Size of EPC memory data
-    uint8_t data[MAX_BANK_SIZE]; // 2 bytes for CRC16, 2 bytes for PC, and max 14 bytes for EPC
+    uint8_t data[EPC_MAX_BANK_SIZE]; // 2 bytes for CRC16, 2 bytes for PC, and max 14 bytes for EPC
     uint16_t pc;
     uint16_t crc;
 } EPCMemoryBank;
@@ -35,13 +37,13 @@ typedef struct {
 // TID Memory Bank
 typedef struct {
     size_t size; // Size of TID memory data
-    uint8_t data[MAX_BANK_SIZE]; // 4 bytes for Class ID
+    uint8_t data[TID_MAX_BANK_SIZE]; // 4 bytes for Class ID
 } TIDMemoryBank;
 
 // User Memory Bank
 typedef struct {
     size_t size; // Size of user memory data
-    uint8_t data[MAX_BANK_SIZE]; // Assuming max 512 bits (64 bytes) for User Memory
+    uint8_t data[USER_MAX_BANK_SIZE]; // Assuming max 512 bits (64 bytes) for User Memory
 } UserMemoryBank;
 
 // EPC Gen 2 Tag containing all memory banks
@@ -52,7 +54,7 @@ typedef struct {
     UserMemoryBank* user;
 } UHFTag;
 
-#define UHF_TAG_WRAPPER_MAX_TAGS 25
+#define UHF_TAG_WRAPPER_MAX_TAGS 50
 
 typedef struct UHFTagWrapper {
     UHFTag* uhf_tag;

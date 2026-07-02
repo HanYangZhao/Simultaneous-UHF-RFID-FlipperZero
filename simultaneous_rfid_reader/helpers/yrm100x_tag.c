@@ -65,9 +65,9 @@ void uhf_tag_reset(UHFTag* uhf_tag) {
     uhf_tag->epc->size = 0;
     uhf_tag->tid->size = 0;
     uhf_tag->user->size = 0;
-    memset(uhf_tag->epc->data, 0, 200);
-    memset(uhf_tag->tid->data, 0, 200);
-    memset(uhf_tag->user->data, 0, 200);
+    memset(uhf_tag->epc->data, 0, EPC_MAX_BANK_SIZE);
+    memset(uhf_tag->tid->data, 0, TID_MAX_BANK_SIZE);
+    memset(uhf_tag->user->data, 0, USER_MAX_BANK_SIZE);
     memset(uhf_tag->reserved->kill_password, 0, 4);
     memset(uhf_tag->reserved->access_password, 0, 4);
 }
