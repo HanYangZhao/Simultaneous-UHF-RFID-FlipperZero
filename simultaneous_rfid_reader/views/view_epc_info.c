@@ -14,8 +14,10 @@ void uhf_reader_view_epc_info_draw_callback(Canvas* canvas, void* model) {
     canvas_clear(canvas);
     canvas_set_color(canvas, ColorBlack);
     canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str(canvas, 4, 11, "            EPC Info:");
+    canvas_draw_str(canvas, 44, 11, "EPC Info:");
     canvas_set_font(canvas, FontSecondary);
+    // Up-key save hint (top-left button with up-arrow icon)
+    elements_button_up(canvas, "Save");
     canvas_draw_str(canvas, 4, 22, "EPC: ");
     canvas_draw_str(canvas, 4, 44, "Reserved: ");
     canvas_draw_str(canvas, 4, 33, "TID: ");
@@ -98,6 +100,23 @@ void uhf_reader_view_epc_info_draw_callback(Canvas* canvas, void* model) {
 
     canvas_draw_str(canvas, 48, 55, VisiblePartMem);
     furi_string_free(XStr);
+}
+
+/**
+ * @brief      Input callback for the Banks (EPC Info) screen.
+ * @details    Pressing Up saves the currently displayed tag, but only when it
+ *             came from a live deep-read (not when viewing an already-saved tag).
+ * @param      event    The event - InputEvent object.
+ * @param      context  The context - UHFReaderApp object.
+ * @return     true if the event was handled, false otherwise.
+*/
+bool uhf_reader_view_epc_info_input_callback(InputEvent* event, void* context) {
+    UHFReaderApp* App = (UHFReaderApp*)context;
+    if(event->type == InputTypeShort && event->key == InputKeyUp && App->DeepReadDone) {
+        uhf_reader_begin_save_tag(App, App->ViewEpcInfo, UHFReaderViewEpcInfo);
+        return true;
+    }
+    return false;
 }
 
 /**
@@ -232,6 +251,7 @@ void view_epc_info_alloc(UHFReaderApp* App) {
     //Allocating the view and setting all callback functions
     App->ViewEpcInfo = view_alloc();
     view_set_draw_callback(App->ViewEpcInfo, uhf_reader_view_epc_info_draw_callback);
+    view_set_input_callback(App->ViewEpcInfo, uhf_reader_view_epc_info_input_callback);
     view_set_previous_callback(App->ViewEpcInfo, uhf_reader_navigation_exit_epc_info_callback);
     view_set_enter_callback(App->ViewEpcInfo, uhf_reader_view_epc_info_enter_callback);
     view_set_exit_callback(App->ViewEpcInfo, uhf_reader_view_epc_info_exit_callback);

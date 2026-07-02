@@ -174,6 +174,10 @@ typedef struct {
     View* ViewEpc;
     View* ViewEpcInfo;
 
+    // Source view model + return view for the shared Up-key save flow
+    View* SaveSourceView;
+    uint32_t SaveReturnView;
+
     char* TempBuffer;
     uint8_t* ApTempBuffer;
     uint8_t* KillPwdTempBuffer;

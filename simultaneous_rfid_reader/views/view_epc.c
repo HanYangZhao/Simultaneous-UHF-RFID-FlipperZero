@@ -19,8 +19,10 @@ void uhf_reader_view_epc_draw_callback(Canvas* canvas, void* model) {
     canvas_clear(canvas);
     canvas_set_color(canvas, ColorBlack);
     canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str(canvas, 4, 11, "            EPC Info:");
+    canvas_draw_str(canvas, 44, 11, "EPC Info:");
     canvas_set_font(canvas, FontSecondary);
+    // Up-key save hint (top-left button with up-arrow icon)
+    elements_button_up(canvas, "Save");
 
     // EPC value — wrap at 20 chars per line (120px fits 128px display)
     const char* EpcStr = furi_string_get_cstr(MyModel->Epc);
@@ -154,6 +156,12 @@ bool uhf_reader_view_epc_input_callback(InputEvent* event, void* context) {
         return true;
     }
 
+    // Up: save the currently displayed tag (TID/User saved when available)
+    if(event->key == InputKeyUp && !App->DeepReading && App->NumberOfEpcsToRead > 0) {
+        uhf_reader_begin_save_tag(App, App->ViewEpc, UHFReaderViewEpcDump);
+        return true;
+    }
+
     return false;
 }
 
@@ -189,6 +197,8 @@ bool uhf_reader_view_epc_custom_event_callback(uint32_t event, void* context) {
         char* TempTid = convertToHexString(tag->tid->data, tag->tid->size);
         char* TempUser = convertToHexString(tag->user->data, tag->user->size);
         char* TempRes = convertToHexString(reserved_buf, 8);
+        char* TempCrc = uint16_to_hex_string(tag->epc->crc);
+        char* TempPc = uint16_to_hex_string(tag->epc->pc);
 
         App->NumberOfTidsToRead = 1;
         App->NumberOfResToRead = 1;
@@ -202,20 +212,33 @@ bool uhf_reader_view_epc_custom_event_callback(uint32_t event, void* context) {
                 furi_string_set_str(_model->Tid, TempTid);
                 furi_string_set_str(_model->User, TempUser);
                 furi_string_set_str(_model->Reserved, TempRes);
+                furi_string_set_str(_model->Crc, TempCrc);
+                furi_string_set_str(_model->Pc, TempPc);
             },
             false);
+
+        // Mirror the deep-read banks into the EPC dump model so an Up-key save
+        // from either screen has the full TID/User/Reserved/CRC/PC available.
+        with_view_model(
+            App->ViewEpc,
+            UHFRFIDTagModel * _model,
+            {
+                _model->IsDeepReading = false;
+                _model->DeepReadDone = true;
+                furi_string_set_str(_model->Tid, TempTid);
+                furi_string_set_str(_model->User, TempUser);
+                furi_string_set_str(_model->Reserved, TempRes);
+                furi_string_set_str(_model->Crc, TempCrc);
+                furi_string_set_str(_model->Pc, TempPc);
+            },
+            true);
 
         free(TempEpc);
         free(TempTid);
         free(TempUser);
         free(TempRes);
-
-        // Update EPC dump model to show ↓Banks hint
-        with_view_model(
-            App->ViewEpc,
-            UHFRFIDTagModel * _model,
-            { _model->IsDeepReading = false; _model->DeepReadDone = true; },
-            true);
+        free(TempCrc);
+        free(TempPc);
 
         notification_message(App->Notifications, &uhf_sequence_blink_stop);
         return true;

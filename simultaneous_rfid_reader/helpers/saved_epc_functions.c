@@ -254,3 +254,166 @@ uint32_t bytes_to_uint32(uint8_t* bytes, size_t length) {
 
     return result;
 }
+
+/**
+ * @brief      Appends a single tag to the saved EPCs file.
+ * @details    Writes "Name:Epc:Tid:Res:Mem:Pc:Crc" under a new TagN key,
+ *             appends the tag to the Saved submenu, and bumps the index file.
+ *             This is the single source of truth for the on-disk save format.
+*/
+void save_uhf_tag_to_file(
+    UHFReaderApp* App,
+    const char* Name,
+    const char* Epc,
+    const char* Tid,
+    const char* Res,
+    const char* Mem,
+    const char* Pc,
+    const char* Crc) {
+    //Open the saved EPCS file for appending
+    if(!flipper_format_file_open_append(App->EpcFile, APP_DATA_PATH("Saved_EPCs.txt"))) {
+        FURI_LOG_E(TAG, "Failed to open file");
+        flipper_format_file_close(App->EpcFile);
+        return;
+    }
+
+    FuriString* NumEpcs = furi_string_alloc();
+    FuriString* EpcAndName = furi_string_alloc();
+
+    //Increment the total number of saved tags and build the new tag entry
+    App->NumberOfSavedTags++;
+    furi_string_printf(NumEpcs, "Tag%ld", App->NumberOfSavedTags);
+    furi_string_printf(EpcAndName, "%s:%s:%s:%s:%s:%s:%s", Name, Epc, Tid, Res, Mem, Pc, Crc);
+
+    //Attempt to write the string using the given format
+    if(!flipper_format_write_string_cstr(
+           App->EpcFile, furi_string_get_cstr(NumEpcs), furi_string_get_cstr(EpcAndName))) {
+        FURI_LOG_E(TAG, "Failed to write to file");
+        App->NumberOfSavedTags--;
+        flipper_format_file_close(App->EpcFile);
+    } else {
+        //Add the new tag to the saved submenu
+        submenu_add_item(
+            App->SubmenuSaved, Name, App->NumberOfSavedTags, uhf_reader_submenu_saved_callback, App);
+        flipper_format_file_close(App->EpcFile);
+
+        //Update the Index_File with the new total number of saved tags
+        FuriString* NewNumEpcs = furi_string_alloc();
+        furi_string_printf(NewNumEpcs, "%ld", App->NumberOfSavedTags);
+        if(!flipper_format_file_open_existing(App->EpcIndexFile, APP_DATA_PATH("Index_File.txt"))) {
+            FURI_LOG_E(TAG, "Failed to open index file");
+        } else {
+            if(!flipper_format_write_string_cstr(
+                   App->EpcIndexFile, "Number of Tags", furi_string_get_cstr(NewNumEpcs))) {
+                FURI_LOG_E(TAG, "Failed to write to file");
+            }
+            flipper_format_file_close(App->EpcIndexFile);
+        }
+        furi_string_free(NewNumEpcs);
+    }
+
+    furi_string_free(EpcAndName);
+    furi_string_free(NumEpcs);
+}
+
+/**
+ * @brief      Text-input result callback for the EPC Dump / Banks Up-key save.
+ * @details    Reads the currently displayed tag fields from App->SaveSourceView
+ *             and writes them to disk, then returns to App->SaveReturnView.
+*/
+void uhf_reader_save_tag_text_updated(void* context) {
+    UHFReaderApp* App = (UHFReaderApp*)context;
+
+    FuriString* Epc = furi_string_alloc();
+    FuriString* Tid = furi_string_alloc();
+    FuriString* Res = furi_string_alloc();
+    FuriString* Mem = furi_string_alloc();
+    FuriString* Pc = furi_string_alloc();
+    FuriString* Crc = furi_string_alloc();
+
+    //Snapshot the tag fields from the originating view model
+    with_view_model(
+        App->SaveSourceView,
+        UHFRFIDTagModel * model,
+        {
+            furi_string_set(Epc, model->Epc);
+            furi_string_set(Tid, model->Tid);
+            furi_string_set(Res, model->Reserved);
+            furi_string_set(Mem, model->User);
+            furi_string_set(Pc, model->Pc);
+            furi_string_set(Crc, model->Crc);
+        },
+        false);
+
+    save_uhf_tag_to_file(
+        App,
+        App->TempSaveBuffer,
+        furi_string_get_cstr(Epc),
+        furi_string_get_cstr(Tid),
+        furi_string_get_cstr(Res),
+        furi_string_get_cstr(Mem),
+        furi_string_get_cstr(Pc),
+        furi_string_get_cstr(Crc));
+
+    furi_string_free(Epc);
+    furi_string_free(Tid);
+    furi_string_free(Res);
+    furi_string_free(Mem);
+    furi_string_free(Pc);
+    furi_string_free(Crc);
+
+    dolphin_deed(DolphinDeedRfidSave);
+    view_dispatcher_switch_to_view(App->ViewDispatcher, App->SaveReturnView);
+}
+
+/**
+ * @brief      Back/cancel callbacks for the Up-key save text input.
+ * @details    The text-input view's context is the module's own object, not the
+ *             app, so these hardcode the return view instead of reading
+ *             App->SaveReturnView (which would dereference the wrong pointer).
+*/
+static uint32_t uhf_reader_save_cancel_to_epc_dump(void* context) {
+    UNUSED(context);
+    return UHFReaderViewEpcDump;
+}
+
+static uint32_t uhf_reader_save_cancel_to_banks(void* context) {
+    UNUSED(context);
+    return UHFReaderViewEpcInfo;
+}
+
+/**
+ * @brief      Opens the save text input for the tag shown in SourceView.
+ * @details    Prefills a default name of Tag_<last 8 EPC chars> and arranges
+ *             the result/cancel callbacks to return to ReturnView.
+*/
+void uhf_reader_begin_save_tag(UHFReaderApp* App, View* SourceView, uint32_t ReturnView) {
+    App->SaveSourceView = SourceView;
+    App->SaveReturnView = ReturnView;
+
+    //Build a default name from the last 8 characters of the EPC
+    with_view_model(
+        SourceView,
+        UHFRFIDTagModel * model,
+        {
+            const char* EpcStr = furi_string_get_cstr(model->Epc);
+            size_t Len = strlen(EpcStr);
+            const char* Tail = Len > 8 ? EpcStr + (Len - 8) : EpcStr;
+            snprintf(App->TempSaveBuffer, App->TempBufferSaveSize, "Tag_%s", Tail);
+        },
+        false);
+
+    text_input_set_header_text(App->SaveInput, "Save EPC");
+    text_input_set_result_callback(
+        App->SaveInput,
+        uhf_reader_save_tag_text_updated,
+        App,
+        App->TempSaveBuffer,
+        App->TempBufferSaveSize,
+        false);
+    view_set_previous_callback(
+        text_input_get_view(App->SaveInput),
+        ReturnView == UHFReaderViewEpcInfo ? uhf_reader_save_cancel_to_banks :
+                                             uhf_reader_save_cancel_to_epc_dump);
+    view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewSaveInput);
+}

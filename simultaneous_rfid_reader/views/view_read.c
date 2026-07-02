@@ -42,7 +42,7 @@ void uhf_reader_view_read_draw_callback(Canvas* canvas, void* model) {
     canvas_clear(canvas);
     canvas_set_color(canvas, ColorBlack);
     canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str(canvas, 4, 11, "           Read Menu:");
+    canvas_draw_str(canvas, 44, 11, "Read Menu:");
     canvas_set_font(canvas, FontSecondary);
 
     // Row 1: # EPCs and Cur Tag
@@ -75,6 +75,8 @@ void uhf_reader_view_read_draw_callback(Canvas* canvas, void* model) {
     }
 
     if(!MyModel->IsReading) {
+        // Up saves the current tag (handled in the input callback)
+        elements_button_up(canvas, "Save");
         elements_button_left(canvas, "Prev");
         elements_button_center(canvas, "Start");
         elements_button_right(canvas, "Next");
@@ -156,21 +158,9 @@ void uhf_reader_save_text_updated(void* context) {
         },
         Redraw);
 
-    //Open the saved EPCS file if tags were read
-    if(!flipper_format_file_open_append(App->EpcFile, APP_DATA_PATH("Saved_EPCs.txt"))) {
-        FURI_LOG_E(TAG, "Failed to open file");
-    }
-
-    //Allocating some FuriStrings for use with the file
-    FuriString* NumEpcs = furi_string_alloc();
-    FuriString* EpcAndName = furi_string_alloc();
-
-    //Increment the total number of saved tags and write this new tag with all its values to the epc_and_name FuriString
-    App->NumberOfSavedTags++;
-    furi_string_printf(NumEpcs, "Tag%ld", App->NumberOfSavedTags);
-    furi_string_printf(
-        EpcAndName,
-        "%s:%s:%s:%s:%s:%s:%s",
+    //Write the tag through the shared writer (single source of truth for format)
+    save_uhf_tag_to_file(
+        App,
         App->TempSaveBuffer,
         App->EpcToSave,
         furi_string_get_cstr(Tid),
@@ -179,41 +169,7 @@ void uhf_reader_save_text_updated(void* context) {
         furi_string_get_cstr(Pc),
         furi_string_get_cstr(Crc));
 
-    //Attempt to write the string using the given format
-    if(!flipper_format_write_string_cstr(
-           App->EpcFile, furi_string_get_cstr(NumEpcs), furi_string_get_cstr(EpcAndName))) {
-        FURI_LOG_E(TAG, "Failed to write to file");
-        flipper_format_file_close(App->EpcFile);
-    } else {
-        //Add the new tag to the saved submenu
-        submenu_add_item(
-            App->SubmenuSaved,
-            App->TempSaveBuffer,
-            App->NumberOfSavedTags,
-            uhf_reader_submenu_saved_callback,
-            App);
-        flipper_format_file_close(App->EpcFile);
-
-        //Update the Index_File to have the new total number of saved tags and write to the file
-        FuriString* NewNumEpcs = furi_string_alloc();
-        furi_string_printf(NewNumEpcs, "%ld", App->NumberOfSavedTags);
-        if(!flipper_format_file_open_existing(App->EpcIndexFile, APP_DATA_PATH("Index_File.txt"))) {
-            FURI_LOG_E(TAG, "Failed to open index file");
-        } else {
-            if(!flipper_format_write_string_cstr(
-                   App->EpcIndexFile, "Number of Tags", furi_string_get_cstr(NewNumEpcs))) {
-                FURI_LOG_E(TAG, "Failed to write to file");
-                flipper_format_file_close(App->EpcIndexFile);
-            } else {
-                flipper_format_file_close(App->EpcIndexFile);
-            }
-        }
-        furi_string_free(NewNumEpcs);
-    }
-
     //Freeing all the FuriStrings used
-    furi_string_free(EpcAndName);
-    furi_string_free(NumEpcs);
     furi_string_free(Res);
     furi_string_free(Tid);
     furi_string_free(Mem);
@@ -242,11 +198,12 @@ bool uhf_reader_view_read_input_callback(InputEvent* event, void* context) {
                 App->ViewRead,
                 UHFReaderConfigModel * model,
                 {
-                    //Copy the name contents from the text input
-                    strncpy(
-                        App->TempSaveBuffer,
-                        furi_string_get_cstr(model->EpcName),
-                        App->TempBufferSaveSize);
+                    //Prefill a default name of Tag_<last 8 EPC chars>
+                    const char* EpcStr = furi_string_get_cstr(model->EpcValue);
+                    size_t Len = strlen(EpcStr);
+                    const char* Tail = Len > 8 ? EpcStr + (Len - 8) : EpcStr;
+                    snprintf(
+                        App->TempSaveBuffer, App->TempBufferSaveSize, "Tag_%s", Tail);
                 },
                 Redraw);
 
