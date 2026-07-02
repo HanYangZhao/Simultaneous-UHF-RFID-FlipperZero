@@ -6,24 +6,30 @@
 */
 void uhf_uart_default_rx_callback(FuriHalSerialHandle *handle, FuriHalSerialRxEvent event, void* ctx) {
     UHFUart* uart = (UHFUart*)ctx;
-    // FURI_LOG_E("UHF_UART", "UHF UART RX CALLBACK");
     if((event & FuriHalSerialRxEventData) == FuriHalSerialRxEventData){
         uint8_t data = furi_hal_serial_async_rx(handle);
-        // if(data == UHF_UART_FRAME_START){
-        //     uhf_buffer_reset(uart->buffer);
-        // }
+        // Frame-start realignment. In continuous multiple-polling the module streams
+        // notification frames back-to-back. After a frame closes the buffer on 0x7E,
+        // the main thread needs time to copy it out; bytes that arrive in the meantime
+        // are dropped. Without realignment the next read would start mid-stream and the
+        // frame would be mis-aligned (data[0] != 0xBB) and rejected.
+        //
+        // Reset only when the buffer is closed or empty. That realigns to a genuine
+        // frame boundary while ensuring a 0xBB byte *inside* an EPC/PC payload (buffer
+        // open and non-empty) is NOT mistaken for a frame start — this preserves the
+        // single-poll behaviour exactly.
+        if(data == UHF_UART_FRAME_START &&
+           (uhf_is_buffer_closed(uart->buffer) || uhf_buffer_get_size(uart->buffer) == 0)){
+            uhf_buffer_reset(uart->buffer);
+        }
         if(uhf_is_buffer_closed(uart->buffer)){
             return;
         }
-        if(data == UHF_UART_FRAME_END){
-            uhf_buffer_append_single(uart->buffer, data);
-            uhf_buffer_close(uart->buffer);
-            FURI_LOG_E("UHF_UART", "UHF Total length read = %u", uhf_buffer_get_size(uart->buffer));
-        }
         uhf_buffer_append_single(uart->buffer, data);
+        if(data == UHF_UART_FRAME_END){
+            uhf_buffer_close(uart->buffer);
+        }
         uhf_uart_tick_reset(uart);
-        // furi_stream_buffer_send(uart->rx_buff_stream, (void*)&data, 1, 0);
-        // furi_thread_flags_set(furi_thread_get_id(uart->thread), UHFUartWorkerWaitingDataFlag);
     }
 }
 
