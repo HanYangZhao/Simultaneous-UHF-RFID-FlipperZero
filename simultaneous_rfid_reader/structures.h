@@ -235,6 +235,8 @@ typedef struct {
     bool IsWriting;
     bool ReaderConnected;
     bool DeepReading;
+    bool DeepReadDone;
+    bool DeepReadTimerExpired;
 
     FuriTimer* Timer;
 
@@ -381,4 +383,6 @@ typedef struct {
     char* ScrollingTextRes;
     uint32_t ScrollOffsetMem;
     char* ScrollingTextMem;
+    bool IsDeepReading;
+    bool DeepReadDone;
 } UHFRFIDTagModel;

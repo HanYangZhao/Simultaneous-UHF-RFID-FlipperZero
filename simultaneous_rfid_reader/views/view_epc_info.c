@@ -163,42 +163,46 @@ void uhf_reader_view_epc_info_enter_callback(void* context) {
     uint32_t Period = furi_ms_to_ticks(200);
     UHFReaderApp* App = (UHFReaderApp*)context;
 
-    //Create FuriStrings for storing saved UHF tag values
-    FuriString* TempStr = furi_string_alloc();
-    FuriString* TempTag = furi_string_alloc();
+    // When arriving from the EPC dump after a deep-read, the ViewEpcInfo model
+    // was already populated by the DeepReadDone handler — skip the file read.
+    if(!App->DeepReadDone) {
+        //Create FuriStrings for storing saved UHF tag values
+        FuriString* TempStr = furi_string_alloc();
+        FuriString* TempTag = furi_string_alloc();
 
-    //Open the saved epcs text file
-    if(!flipper_format_file_open_existing(App->EpcFile, APP_DATA_PATH("Saved_EPCs.txt"))) {
-        FURI_LOG_E(TAG, "Failed to open Saved file");
-        flipper_format_file_close(App->EpcFile);
-
-    } else {
-        //Read from the file selecting the current tag the user picked
-        furi_string_printf(TempStr, "Tag%ld", App->SelectedTagIndex);
-        if(!flipper_format_read_string(App->EpcFile, furi_string_get_cstr(TempStr), TempTag)) {
-            FURI_LOG_D(TAG, "Could not read tag %ld data", App->SelectedTagIndex);
-        } else {
-            //Grabbing the extracted tid, reserved memory, user memory, and epc from the file to display to the user
-            const char* InputString = furi_string_get_cstr(TempTag);
-            bool Redraw = true;
-            with_view_model(
-                App->ViewEpcInfo,
-                UHFRFIDTagModel * model,
-                {
-                    furi_string_set(model->Epc, extract_epc(InputString));
-                    furi_string_set(model->Tid, extract_tid(InputString));
-                    furi_string_set(model->Reserved, extract_res(InputString));
-                    furi_string_set(model->User, extract_mem(InputString));
-                },
-                Redraw);
-            //Close the file
+        //Open the saved epcs text file
+        if(!flipper_format_file_open_existing(App->EpcFile, APP_DATA_PATH("Saved_EPCs.txt"))) {
+            FURI_LOG_E(TAG, "Failed to open Saved file");
             flipper_format_file_close(App->EpcFile);
-        }
-    }
 
-    //Freeing all FuriStrings used
-    furi_string_free(TempTag);
-    furi_string_free(TempStr);
+        } else {
+            //Read from the file selecting the current tag the user picked
+            furi_string_printf(TempStr, "Tag%ld", App->SelectedTagIndex);
+            if(!flipper_format_read_string(App->EpcFile, furi_string_get_cstr(TempStr), TempTag)) {
+                FURI_LOG_D(TAG, "Could not read tag %ld data", App->SelectedTagIndex);
+            } else {
+                //Grabbing the extracted tid, reserved memory, user memory, and epc from the file to display to the user
+                const char* InputString = furi_string_get_cstr(TempTag);
+                bool Redraw = true;
+                with_view_model(
+                    App->ViewEpcInfo,
+                    UHFRFIDTagModel * model,
+                    {
+                        furi_string_set(model->Epc, extract_epc(InputString));
+                        furi_string_set(model->Tid, extract_tid(InputString));
+                        furi_string_set(model->Reserved, extract_res(InputString));
+                        furi_string_set(model->User, extract_mem(InputString));
+                    },
+                    Redraw);
+                //Close the file
+                flipper_format_file_close(App->EpcFile);
+            }
+        }
+
+        //Freeing all FuriStrings used
+        furi_string_free(TempTag);
+        furi_string_free(TempStr);
+    }
 
     //Start the timer
     furi_assert(App->Timer == NULL);
