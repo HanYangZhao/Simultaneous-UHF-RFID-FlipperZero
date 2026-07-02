@@ -159,6 +159,56 @@ UHFWorkerEvent read_single_card(UHFWorker* uhf_worker) {
     return UHFWorkerEventSuccess;
 }
 
+// Deep-read a single, pre-selected tag from the multi-poll list.
+// The caller populates uhf_worker->SelectedTag with the target EPC before starting
+// the worker; here we select that specific EPC and read its TID, User and Reserved
+// banks using the user's configured default access password.
+UHFWorkerEvent deep_read_selected_card(UHFWorker* uhf_worker) {
+    FURI_LOG_I(UHF_WK_TAG, "=== Starting deep_read_selected_card ===");
+    UHFTag* uhf_tag = uhf_worker->SelectedTag;
+
+    // set select on the specific EPC with stop check
+    M100ResponseType set_status;
+    int set_attempts = 0;
+    do {
+        if(uhf_worker->state == UHFWorkerStateStop) {
+            FURI_LOG_I(UHF_WK_TAG, "deep read set_select aborted by user");
+            return UHFWorkerEventAborted;
+        }
+        set_attempts++;
+        set_status = m100_set_select(uhf_worker->module, uhf_tag);
+        if(set_attempts % 10 == 0) {
+            FURI_LOG_I(
+                UHF_WK_TAG, "deep set_select attempt %d, status=%d", set_attempts, (int)set_status);
+        }
+    } while(set_status != M100SuccessResponse);
+    FURI_LOG_I(UHF_WK_TAG, "deep set_select succeeded after %d attempts", set_attempts);
+
+    // read tid
+    UHFWorkerEvent event = read_bank_till_max_length(uhf_worker, uhf_tag, TIDBank);
+    if(event != UHFWorkerEventSuccess) {
+        FURI_LOG_I(UHF_WK_TAG, "deep TID read failed: %d", (int)event);
+        return event;
+    }
+
+    // read user
+    event = read_bank_till_max_length(uhf_worker, uhf_tag, UserBank);
+    if(event != UHFWorkerEventSuccess) {
+        FURI_LOG_I(UHF_WK_TAG, "deep User read failed: %d", (int)event);
+        return event;
+    }
+
+    // read reserved
+    event = read_bank_till_max_length(uhf_worker, uhf_tag, ReservedBank);
+    if(event != UHFWorkerEventSuccess) {
+        FURI_LOG_I(UHF_WK_TAG, "deep Reserved read failed: %d", (int)event);
+        return event;
+    }
+
+    FURI_LOG_I(UHF_WK_TAG, "=== deep_read_selected_card complete ===");
+    return UHFWorkerEventSuccess;
+}
+
 //Modified by Riley Haffner to be able to write to the reserved bank
 UHFWorkerEvent write_single_card(UHFWorker* uhf_worker) {
     //uhf_worker->TagToWrite
@@ -287,6 +337,9 @@ int32_t uhf_worker_task(void* ctx) {
     } else if(uhf_worker->state == UHFWorkerStateDetectMultiple) {
         UHFWorkerEvent event = detect_multiple_cards(uhf_worker);
         uhf_worker->callback(event, uhf_worker->ctx);
+    } else if(uhf_worker->state == UHFWorkerStateDeepReadSelected) {
+        UHFWorkerEvent event = deep_read_selected_card(uhf_worker);
+        uhf_worker->callback(event, uhf_worker->ctx);
     } else if(uhf_worker->state == UHFWorkerStateWriteSingle) {
         UHFWorkerEvent event = write_single_card(uhf_worker);
         uhf_worker->callback(event, uhf_worker->ctx);
@@ -302,6 +355,7 @@ UHFWorker* uhf_worker_alloc() {
     uhf_worker->callback = NULL;
     uhf_worker->ctx = NULL;
     uhf_worker->NewTag = uhf_tag_alloc();
+    uhf_worker->SelectedTag = uhf_tag_alloc();
     uhf_worker->KillPwd = false;
     uhf_worker->AccessPwd = false;
     uhf_worker->DefaultAP = 0;
@@ -338,5 +392,6 @@ void uhf_worker_free(UHFWorker* uhf_worker) {
     furi_thread_free(uhf_worker->thread);
     m100_module_free(uhf_worker->module);
     uhf_tag_free(uhf_worker->NewTag);
+    uhf_tag_free(uhf_worker->SelectedTag);
     free(uhf_worker);
 }

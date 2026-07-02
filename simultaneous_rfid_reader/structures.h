@@ -89,6 +89,8 @@ typedef enum {
     UHFCustomEventWorkerExit = 105,
     UHFCustomEventWorkerExitAborted = 106,
     UHFCustomEventWorkerCardDetected = 107,
+    UHFCustomEventDeepReadDone = 108,
+    UHFCustomEventDeepReadAborted = 109,
 } UHFReaderEventId;
 
 //State of the reader app when communicating with raspberry pi zero over uart
@@ -232,6 +234,7 @@ typedef struct {
     bool IsReading;
     bool IsWriting;
     bool ReaderConnected;
+    bool DeepReading;
 
     FuriTimer* Timer;
 

@@ -21,6 +21,7 @@ typedef enum {
     // Main worker states
     UHFWorkerStateDetectSingle,
     UHFWorkerStateDetectMultiple,
+    UHFWorkerStateDeepReadSelected,
     UHFWorkerStateWriteSingle,
     UHFWorkerStateWriteKey,
     //UHFWorkerStateKillTag,
@@ -48,6 +49,7 @@ typedef struct UHFWorker {
     bool KillPwd;
     bool AccessPwd;
     UHFTag* NewTag;
+    UHFTag* SelectedTag;
     uint32_t DefaultAP;
     //uint32_t write_ap;
     void* ctx;
