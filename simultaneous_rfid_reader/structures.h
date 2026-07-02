@@ -88,6 +88,7 @@ typedef enum {
     UHFCustomEventReserved = 100,
     UHFCustomEventWorkerExit = 105,
     UHFCustomEventWorkerExitAborted = 106,
+    UHFCustomEventWorkerCardDetected = 107,
 } UHFReaderEventId;
 
 //State of the reader app when communicating with raspberry pi zero over uart

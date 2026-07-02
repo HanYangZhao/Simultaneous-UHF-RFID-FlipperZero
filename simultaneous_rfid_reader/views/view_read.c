@@ -510,6 +510,10 @@ void uhf_read_tag_worker_callback(UHFWorkerEvent event, void* ctx) {
             dolphin_deed(DolphinDeedNfcReadSuccess);
         }
         view_dispatcher_send_custom_event(App->ViewDispatcher, UHFCustomEventWorkerExit);
+    } else if(event == UHFWorkerEventCardDetected) {
+        // Live update: a new unique EPC was appended to the wrapper during an active
+        // multi-poll session. Refresh the # EPCs counter and current tag in real time.
+        view_dispatcher_send_custom_event(App->ViewDispatcher, UHFCustomEventWorkerCardDetected);
     } else if(event == UHFWorkerEventAborted) {
         notification_message(App->Notifications, &uhf_sequence_blink_stop);
         view_dispatcher_send_custom_event(App->ViewDispatcher, UHFCustomEventWorkerExitAborted);
@@ -531,6 +535,39 @@ bool uhf_reader_view_read_custom_event_callback(uint32_t event, void* context) {
     case UHFReaderEventIdRedrawScreen: {
         bool Redraw = true;
         with_view_model(App->ViewRead, UHFReaderConfigModel * _model, { UNUSED(_model); }, Redraw);
+        return true;
+    }
+
+    //Handles a live tag detection during an active multi-poll session
+    case UHFCustomEventWorkerCardDetected: {
+        bool Redraw = true;
+        UHFTagWrapper* wrapper = App->YRM100XWorker->uhf_tag_wrapper;
+        size_t count = wrapper->tag_count;
+        if(count == 0) {
+            return true;
+        }
+        App->NumberOfEpcsToRead = count;
+
+        // Show the most-recently discovered tag as it streams in
+        UHFTag* latest = wrapper->tags[count - 1];
+        char* TempEpc = convertToHexString(latest->epc->data, latest->epc->size);
+        char* TempCrc = uint16_to_hex_string(latest->epc->crc);
+        char* TempPc = uint16_to_hex_string(latest->epc->pc);
+
+        with_view_model(
+            App->ViewRead,
+            UHFReaderConfigModel * _model,
+            {
+                furi_string_set_str(_model->EpcValue, TempEpc);
+                _model->NumEpcsRead = (uint32_t)count;
+                _model->CurEpcIndex = (uint32_t)count;
+                furi_string_set_str(_model->Crc, TempCrc);
+                furi_string_set_str(_model->Pc, TempPc);
+            },
+            Redraw);
+        free(TempEpc);
+        free(TempCrc);
+        free(TempPc);
         return true;
     }
 

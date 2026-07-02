@@ -208,11 +208,13 @@ M100ResponseType m100_multi_poll(M100Module* module, UHFTagWrapper* wrapper, UHF
         (uint8_t*)&CMD_MULTIPLE_POLLING.cmd[0],
         CMD_MULTIPLE_POLLING.length);
 
-    // Collect EPC notification frames.  Track consecutive no-tag (cmd=0xFF) rounds;
-    // reset to 0 each time a new unique tag is added.  50 consecutive no-tag rounds
-    // (~50-500 ms) is enough to handle Gen2 Q-adaptation before the first EPC frame
-    // and to confirm the field is empty after all tags have been collected.
-    int consecutive_no_tag = 0;
+    // Live multi-tag scanning session. Runs until the user stops it (worker state
+    // -> Stop) or the tag list is full (UHF_TAG_WRAPPER_MAX_TAGS). When a tag is in
+    // the field the module streams its EPC continuously and never emits a cmd=0xFF
+    // no-tag frame, so there is deliberately NO time budget or "settle" cutoff — the
+    // session stays live so tags brought into range mid-scan are picked up. Each new
+    // unique EPC fires UHFWorkerEventCardDetected so the view can update the # EPCs
+    // counter and current tag in real time (issue #4).
     while(wrapper->tag_count < UHF_TAG_WRAPPER_MAX_TAGS) {
         if(worker->state == UHFWorkerStateStop) {
             FURI_LOG_I(UHF_MOD_TAG, "multi_poll: aborted by worker stop");
@@ -246,33 +248,18 @@ M100ResponseType m100_multi_poll(M100Module* module, UHFTagWrapper* wrapper, UHF
         uhf_uart_tick_reset(uart);
         uint8_t* data = frame;
 
-        // All rounds exhausted without a frame — inventory round complete
+        // No frame within the window — nothing to process this iteration; keep the
+        // session alive and wait for the next frame.
         if(!frame_ready) {
-            FURI_LOG_I(
-                UHF_MOD_TAG,
-                "multi_poll: no more frames, total tags=%d",
-                (int)wrapper->tag_count);
-            break;
-        }
-
-        // §2.3.3: no-tag / CRC-error response — cmd=0xFF — signals one inventory
-        // round completed with no tag found. Gen2 anti-collision is probabilistic:
-        // a tag only responds in ~25% of rounds (Q=2), so no-tag frames are normal
-        // even when tags are present. Continue collecting but break after 20
-        // consecutive no-tag rounds — that's enough to confirm the field is empty
-        // or that all unique tags have been collected.
-        if(data[0] == FRAME_START && length >= 4 && data[2] == 0xFF) {
-            consecutive_no_tag++;
-            if(consecutive_no_tag >= 50) {
-                FURI_LOG_I(
-                    UHF_MOD_TAG,
-                    "multi_poll: 50 consecutive no-tag rounds, stopping (tags=%d)",
-                    (int)wrapper->tag_count);
-                break;
-            }
             continue;
         }
-        consecutive_no_tag = 0;
+
+        // §2.3.3: no-tag / CRC-error response — cmd=0xFF. Normal between tag reads
+        // (Gen2 anti-collision) and continuously when the field is empty. Just skip
+        // it and keep scanning.
+        if(data[0] == FRAME_START && length >= 4 && data[2] == 0xFF) {
+            continue;
+        }
 
         // Validate frame structure and checksum
         if(length < 13 || data[0] != FRAME_START || data[length - 1] != FRAME_END) {
@@ -318,7 +305,6 @@ M100ResponseType m100_multi_poll(M100Module* module, UHFTagWrapper* wrapper, UHF
             }
         }
         if(duplicate) {
-            FURI_LOG_D(UHF_MOD_TAG, "multi_poll: duplicate EPC, skipping");
             continue;
         }
 
@@ -335,9 +321,14 @@ M100ResponseType m100_multi_poll(M100Module* module, UHFTagWrapper* wrapper, UHF
             uhf_tag_free(new_tag);
             break;
         }
-        consecutive_no_tag = 0; // new tag found — reset the idle round counter
-        FURI_LOG_I(UHF_MOD_TAG, "multi_poll: added unique tag %d", (int)wrapper->tag_count);
         result = M100SuccessResponse;
+        FURI_LOG_I(UHF_MOD_TAG, "multi_poll: added unique tag %d", (int)wrapper->tag_count);
+
+        // Fire a live event so the view updates the # EPCs counter and current tag
+        // in real time (issue #4).
+        if(worker->callback) {
+            worker->callback(UHFWorkerEventCardDetected, worker->ctx);
+        }
     }
 
     // Always stop the inventory round regardless of exit path

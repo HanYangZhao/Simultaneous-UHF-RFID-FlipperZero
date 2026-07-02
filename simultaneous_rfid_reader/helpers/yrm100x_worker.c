@@ -257,17 +257,21 @@ static UHFWorkerEvent detect_multiple_cards(UHFWorker* uhf_worker) {
     uhf_tag_wrapper_reset_list(uhf_worker->uhf_tag_wrapper);
     M100ResponseType status =
         m100_multi_poll(uhf_worker->module, uhf_worker->uhf_tag_wrapper, uhf_worker);
-    if(uhf_worker->state == UHFWorkerStateStop) {
-        FURI_LOG_I(UHF_WK_TAG, "detect_multiple_cards: aborted");
-        return UHFWorkerEventAborted;
-    }
+    size_t tag_count = uhf_worker->uhf_tag_wrapper->tag_count;
     FURI_LOG_I(
         UHF_WK_TAG,
-        "detect_multiple_cards: status=%d, tags=%d",
+        "detect_multiple_cards: status=%d, tags=%d, state=%d",
         (int)status,
-        (int)uhf_worker->uhf_tag_wrapper->tag_count);
-    if(status == M100SuccessResponse && uhf_worker->uhf_tag_wrapper->tag_count > 0) {
+        (int)tag_count,
+        (int)uhf_worker->state);
+    // Whenever we collected at least one tag, report success so the view displays
+    // the list — even if the user pressed Stop to end the scan early.
+    if(tag_count > 0) {
         return UHFWorkerEventSuccess;
+    }
+    if(uhf_worker->state == UHFWorkerStateStop) {
+        FURI_LOG_I(UHF_WK_TAG, "detect_multiple_cards: aborted with no tags");
+        return UHFWorkerEventAborted;
     }
     return UHFWorkerEventNoTagDetected;
 }
