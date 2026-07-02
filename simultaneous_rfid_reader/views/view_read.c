@@ -313,8 +313,7 @@ bool uhf_reader_view_read_input_callback(InputEvent* event, void* context) {
     }
     //Handles all short input types
     else if(event->type == InputTypeShort) {
-        //If the user presses the left button while the app is not reading
-        //TODO CHANGE THIS LOGIC WHEN ADD SUPPORT FOR MULTIPLE TAGS YRM100
+        //If the user presses the left button while the app is not reading (M6E/M7E readers)
         if(event->key == InputKeyLeft && !App->IsReading && App->UHFModuleType != YRM100X_MODULE) {
             bool Redraw = true;
 
@@ -405,6 +404,97 @@ bool uhf_reader_view_read_input_callback(InputEvent* event, void* context) {
                 },
                 Redraw);
 
+            return true;
+        }
+        //YRM100: navigate to the previous collected EPC in the multi-tag list
+        else if(
+            event->key == InputKeyLeft && !App->IsReading &&
+            App->UHFModuleType == YRM100X_MODULE) {
+            bool Redraw = true;
+            UHFTagWrapper* wrapper = App->YRM100XWorker->uhf_tag_wrapper;
+            uint32_t idx = App->CurEpcIndex;
+            if(App->NumberOfEpcsToRead > 1 && idx > 1 && idx <= wrapper->tag_count) {
+                dolphin_deed(DolphinDeedNfcRead);
+                idx -= 1;
+                App->CurEpcIndex = idx;
+                UHFTag* tag = wrapper->tags[idx - 1];
+                char* TempEpc = convertToHexString(tag->epc->data, tag->epc->size);
+                char* TempCrc = uint16_to_hex_string(tag->epc->crc);
+                char* TempPc = uint16_to_hex_string(tag->epc->pc);
+
+                with_view_model(
+                    App->ViewRead,
+                    UHFReaderConfigModel * model,
+                    {
+                        model->CurEpcIndex = idx;
+                        model->NumEpcsRead = App->NumberOfEpcsToRead;
+                        furi_string_set_str(model->EpcValue, TempEpc);
+                        furi_string_set_str(model->Crc, TempCrc);
+                        furi_string_set_str(model->Pc, TempPc);
+                        model->ScrollOffset = 0;
+                    },
+                    Redraw);
+                with_view_model(
+                    App->ViewEpc,
+                    UHFRFIDTagModel * model,
+                    {
+                        furi_string_set_str(model->Epc, TempEpc);
+                        furi_string_set_str(model->Tid, "---");
+                        furi_string_set_str(model->User, "---");
+                        furi_string_set_str(model->Reserved, "---");
+                        furi_string_set_str(model->Crc, TempCrc);
+                        furi_string_set_str(model->Pc, TempPc);
+                    },
+                    Redraw);
+                free(TempEpc);
+                free(TempCrc);
+                free(TempPc);
+            }
+            return true;
+        }
+        //YRM100: navigate to the next collected EPC in the multi-tag list
+        else if(
+            event->key == InputKeyRight && !App->IsReading &&
+            App->UHFModuleType == YRM100X_MODULE) {
+            bool Redraw = true;
+            UHFTagWrapper* wrapper = App->YRM100XWorker->uhf_tag_wrapper;
+            uint32_t idx = App->CurEpcIndex;
+            if(App->NumberOfEpcsToRead > 1 && idx >= 1 && idx < wrapper->tag_count) {
+                idx += 1;
+                App->CurEpcIndex = idx;
+                UHFTag* tag = wrapper->tags[idx - 1];
+                char* TempEpc = convertToHexString(tag->epc->data, tag->epc->size);
+                char* TempCrc = uint16_to_hex_string(tag->epc->crc);
+                char* TempPc = uint16_to_hex_string(tag->epc->pc);
+
+                with_view_model(
+                    App->ViewRead,
+                    UHFReaderConfigModel * model,
+                    {
+                        model->CurEpcIndex = idx;
+                        model->NumEpcsRead = App->NumberOfEpcsToRead;
+                        furi_string_set_str(model->EpcValue, TempEpc);
+                        furi_string_set_str(model->Crc, TempCrc);
+                        furi_string_set_str(model->Pc, TempPc);
+                        model->ScrollOffset = 0;
+                    },
+                    Redraw);
+                with_view_model(
+                    App->ViewEpc,
+                    UHFRFIDTagModel * model,
+                    {
+                        furi_string_set_str(model->Epc, TempEpc);
+                        furi_string_set_str(model->Tid, "---");
+                        furi_string_set_str(model->User, "---");
+                        furi_string_set_str(model->Reserved, "---");
+                        furi_string_set_str(model->Crc, TempCrc);
+                        furi_string_set_str(model->Pc, TempPc);
+                    },
+                    Redraw);
+                free(TempEpc);
+                free(TempCrc);
+                free(TempPc);
+            }
             return true;
         }
 
