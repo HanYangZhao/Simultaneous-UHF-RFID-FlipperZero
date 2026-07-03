@@ -42,7 +42,7 @@ void uhf_reader_view_read_draw_callback(Canvas* canvas, void* model) {
     canvas_clear(canvas);
     canvas_set_color(canvas, ColorBlack);
     canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str(canvas, 44, 11, "Main:");
+    canvas_draw_str(canvas, 44, 11, "Scan");
     canvas_set_font(canvas, FontSecondary);
 
     // Row 1: # EPCs and Cur Tag
