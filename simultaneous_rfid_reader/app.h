@@ -21,8 +21,8 @@
 #define WRITE_EPC_FAIL "Write Failed!"
 
 //Content for the about screen
-#define UHF_RFID_VERSION_APP "1.1.2"
-#define UHF_RFID_MEM_DEVELOPER "@Haffnerriley"
+#define UHF_RFID_VERSION_APP "1.2.0"
+#define UHF_RFID_MEM_DEVELOPER "@Haffnerriley & HanzTech"
 #define UHF_RFID_GITHUB "https://github.com/haffnerriley"
 #define UHF_RFID_NAME "\e#\e!       UHF RFID Reader        \e!\n"
 #define UHF_RFID_BLANK_INV "\e#\e!"
@@ -48,6 +48,7 @@
 #include "views/view_epc.h"
 #include "views/view_delete_success.h"
 #include "views/view_epc_info.h"
+#include "views/view_bank_mem.h"
 #include "views/view_read.h"
 #include "views/view_tag_actions.h"
 #include "views/view_lock.h"

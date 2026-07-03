@@ -1,4 +1,5 @@
 #include "yrm100x_module.h"
+#include "yrm100x_worker.h"
 #include "yrm100x_module_cmd.h"
 #include "saved_epc_functions.h"
 #include <furi.h>
@@ -14,51 +15,132 @@ static const char* UHF_MOD_TAG = "UHF_MOD";
 #define DELAY_MS  100
 #define WAIT_TICK 4000 // max wait time in between each byte
 
+// Error frames use command byte 0xFF regardless of which command triggered them.
+#define FRAME_ERROR_CMD 0xFF
+// Maximum number of stale/mismatched frames to discard while hunting for the
+// response that actually belongs to the command we just sent.
+#define MAX_STALE_FRAMES 4
+
+// Only tag-interaction commands can legitimately return a 0xFF error frame. For
+// all other commands (e.g. Set Select, Set/Get Power) a 0xFF frame is a stale
+// reply left over from an earlier read/poll and must be discarded, not accepted.
+static bool cmd_can_return_error_frame(uint8_t command) {
+    switch(command) {
+    case 0x22: // single poll
+    case 0x27: // multiple poll
+    case 0x39: // read tag memory
+    case 0x49: // write tag memory
+        return true;
+    default:
+        return false;
+    }
+}
+
 static M100ResponseType setup_and_send_rx(M100Module* module, uint8_t* cmd, size_t cmd_length) {
     UHFUart* uart = module->uart;
     Buffer* buffer = uart->buffer;
-    // clear buffer
+    // The module's response latency at the edge of read range swings from ~1ms to
+    // well over 30ms, so a reply to a PREVIOUS command can still be in flight and
+    // arrive during this command's window, one command out of phase. Every module
+    // response echoes the request command byte in data[2] (or 0xFF for an error
+    // frame), so we discard any frame whose command byte does not match what we
+    // just sent and keep waiting for the matching one. This re-synchronises the
+    // request/response pipeline and stops stale frames/fragments from being
+    // mis-attributed (which was corrupting bank data).
+    uint8_t expected_cmd = (cmd_length > 2) ? cmd[2] : 0x00;
+    bool allow_error_frame = cmd_can_return_error_frame(expected_cmd);
+
+    // clear buffer (discard any stale bytes already sitting in the ring)
     uhf_buffer_reset(buffer);
+
+    // Log TX bytes
+    FuriString* tx_log = furi_string_alloc();
+    for(size_t i = 0; i < cmd_length; i++) furi_string_cat_printf(tx_log, "%02X ", cmd[i]);
+    FURI_LOG_D(UHF_MOD_TAG, "TX [%d]: %s", (int)cmd_length, furi_string_get_cstr(tx_log));
+    furi_string_free(tx_log);
+
     // send cmd
     uhf_uart_send_wait(uart, cmd, cmd_length);
-    // wait for response by polling
-    int tick_count = 0;
-    while(!uhf_is_buffer_closed(buffer) && !uhf_uart_tick(uart)) {
-        tick_count++;
-    }
-    // reset tick
-    uhf_uart_tick_reset(uart);
-    // Validation Checks
-    uint8_t* data = uhf_buffer_get_data(buffer);
-    size_t length = uhf_buffer_get_size(buffer);
-    // check if size > 0
-    if(!length) {
-        FURI_LOG_D(UHF_MOD_TAG, "Response: empty (waited %d ticks)", tick_count);
-        return M100EmptyResponse;
-    }
-    // check if data is valid
-    if(data[0] != FRAME_START || data[length - 1] != FRAME_END) {
-        FURI_LOG_W(
+
+    for(int frame = 0;; frame++) {
+        // wait for a frame by polling (tick is reset per byte by the ISR, so this
+        // bounds how long we wait for the module to START replying)
+        uhf_uart_tick_reset(uart);
+        int tick_count = 0;
+        while(!uhf_is_buffer_closed(buffer) && !uhf_uart_tick(uart)) {
+            tick_count++;
+        }
+        uint8_t* data = uhf_buffer_get_data(buffer);
+        size_t length = uhf_buffer_get_size(buffer);
+
+        // Log RX bytes (always, so failures are visible)
+        FuriString* rx_log = furi_string_alloc();
+        for(size_t i = 0; i < length; i++) furi_string_cat_printf(rx_log, "%02X ", data[i]);
+        FURI_LOG_D(
             UHF_MOD_TAG,
-            "Response: validation fail, len=%d, first=0x%02X, last=0x%02X (waited %d ticks)",
-            length,
-            data[0],
-            data[length - 1],
-            tick_count);
-        return M100ValidationFail;
+            "RX [%d] (ticks=%d): %s",
+            (int)length,
+            tick_count,
+            furi_string_get_cstr(rx_log));
+        furi_string_free(rx_log);
+
+        // genuine no-response: nothing arrived within the first-byte timeout
+        if(!length) {
+            FURI_LOG_D(UHF_MOD_TAG, "Response: empty (waited %d ticks)", tick_count);
+            return M100EmptyResponse;
+        }
+
+        // framing check: a truncated frame or a fragment left over from a prior
+        // command's response that was split across a buffer reset
+        if(data[0] != FRAME_START || data[length - 1] != FRAME_END) {
+            FURI_LOG_W(
+                UHF_MOD_TAG,
+                "Response: framing fail, len=%d, first=0x%02X, last=0x%02X (waited %d ticks)",
+                length,
+                data[0],
+                data[length - 1],
+                tick_count);
+            if(frame < MAX_STALE_FRAMES) {
+                uhf_buffer_reset(buffer);
+                continue;
+            }
+            return M100ValidationFail;
+        }
+
+        // command-echo check: discard frames belonging to a previous command
+        uint8_t rtn_cmd = (length >= 3) ? data[2] : 0x00;
+        bool cmd_matches =
+            (rtn_cmd == expected_cmd) || (allow_error_frame && rtn_cmd == FRAME_ERROR_CMD);
+        if(!cmd_matches) {
+            FURI_LOG_W(
+                UHF_MOD_TAG,
+                "Response: stale frame cmd=0x%02X expected=0x%02X, discarding",
+                rtn_cmd,
+                expected_cmd);
+            if(frame < MAX_STALE_FRAMES) {
+                uhf_buffer_reset(buffer);
+                continue;
+            }
+            return M100ValidationFail;
+        }
+
+        // check if checksum is correct
+        if(checksum(data + 1, length - 3) != data[length - 2]) {
+            FURI_LOG_W(
+                UHF_MOD_TAG,
+                "Response: checksum fail, len=%d, expected=0x%02X, got=0x%02X",
+                length,
+                data[length - 2],
+                checksum(data + 1, length - 3));
+            if(frame < MAX_STALE_FRAMES) {
+                uhf_buffer_reset(buffer);
+                continue;
+            }
+            return M100ChecksumFail;
+        }
+        FURI_LOG_D(UHF_MOD_TAG, "Response: OK, len=%d", length);
+        return M100SuccessResponse;
     }
-    // check if checksum is correct
-    if(checksum(data + 1, length - 3) != data[length - 2]) {
-        FURI_LOG_W(
-            UHF_MOD_TAG,
-            "Response: checksum fail, len=%d, expected=0x%02X, got=0x%02X",
-            length,
-            data[length - 2],
-            checksum(data + 1, length - 3));
-        return M100ChecksumFail;
-    }
-    FURI_LOG_D(UHF_MOD_TAG, "Response: OK, len=%d", length);
-    return M100SuccessResponse;
 }
 
 M100ModuleInfo* m100_module_info_alloc() {
@@ -177,6 +259,185 @@ M100ResponseType m100_single_poll(M100Module* module, UHFTag* uhf_tag) {
     return M100SuccessResponse;
 }
 
+M100ResponseType m100_multi_poll(M100Module* module, UHFTagWrapper* wrapper, UHFWorker* worker) {
+    UHFUart* uart = module->uart;
+    Buffer* buffer = uart->buffer;
+    M100ResponseType result = M100EmptyResponse;
+
+    // Stop any in-progress inventory so the module is in a clean state before
+    // we send CMD_MULTIPLE_POLLING.  If the previous scan was aborted (user pressed
+    // Back) the module may still be running rounds and the new command would race
+    // with the tail of the old inventory.
+    uhf_buffer_reset(buffer);
+    uhf_uart_tick_reset(uart);
+    uhf_uart_send_wait(
+        uart,
+        (uint8_t*)&CMD_STOP_MULTIPLE_POLLING.cmd[0],
+        CMD_STOP_MULTIPLE_POLLING.length);
+    // Drain the stop-ack (or any in-flight EPC/no-tag frames) — 20 rounds ~= 4 ms
+    for(int i = 0; i < 20; i++) {
+        uhf_uart_tick_reset(uart);
+        while(!uhf_is_buffer_closed(buffer) && !uhf_uart_tick(uart)) {}
+        if(uhf_is_buffer_closed(buffer)) break;
+    }
+
+    // Send CMD_MULTIPLE_POLLING once to start the inventory round
+    uhf_buffer_reset(buffer);
+    uhf_uart_tick_reset(uart);
+    uhf_uart_send_wait(
+        uart,
+        (uint8_t*)&CMD_MULTIPLE_POLLING.cmd[0],
+        CMD_MULTIPLE_POLLING.length);
+
+    // Live multi-tag scanning session. Runs until the user stops it (worker state
+    // -> Stop) or the tag list is full (UHF_TAG_WRAPPER_MAX_TAGS). When a tag is in
+    // the field the module streams its EPC continuously and never emits a cmd=0xFF
+    // no-tag frame, so there is deliberately NO time budget or "settle" cutoff — the
+    // session stays live so tags brought into range mid-scan are picked up. Each new
+    // unique EPC fires UHFWorkerEventCardDetected so the view can update the # EPCs
+    // counter and current tag in real time (issue #4).
+    while(wrapper->tag_count < UHF_TAG_WRAPPER_MAX_TAGS) {
+        if(worker->state == UHFWorkerStateStop) {
+            FURI_LOG_I(UHF_MOD_TAG, "multi_poll: aborted by worker stop");
+            break;
+        }
+
+        // Wait up to 200 ms for the next frame using a wall-clock timeout.
+        // furi_get_tick() returns FreeRTOS ms ticks.  This avoids the
+        // volatile-int race between the main thread's uhf_uart_tick decrement
+        // and the ISR's uhf_uart_tick_reset, which could cause the 500-round
+        // spin loop to exit prematurely.
+        uint32_t t0 = furi_get_tick();
+        while(!uhf_is_buffer_closed(buffer)) {
+            if(furi_get_tick() - t0 >= 200) break;
+            if(worker->state == UHFWorkerStateStop) break;
+        }
+        bool frame_ready = uhf_is_buffer_closed(buffer);
+
+        // Copy frame data to a local buffer and reset the shared buffer immediately.
+        // The UART ISR discards all bytes while buffer->closed == true. The module
+        // sends frames back-to-back at 115200 baud (~87 µs/byte), so we must reopen
+        // the ISR window before doing any heavy work (malloc, CRC, memcmp).
+        uint8_t frame[64];
+        size_t length = 0;
+        if(frame_ready) {
+            size_t raw_len = uhf_buffer_get_size(buffer);
+            length = raw_len < sizeof(frame) ? raw_len : sizeof(frame);
+            memcpy(frame, uhf_buffer_get_data(buffer), length);
+        }
+        uhf_buffer_reset(buffer); // reopen ISR window ASAP
+        uhf_uart_tick_reset(uart);
+        uint8_t* data = frame;
+
+        // No frame within the window — nothing to process this iteration; keep the
+        // session alive and wait for the next frame.
+        if(!frame_ready) {
+            continue;
+        }
+
+        // §2.3.3: no-tag / CRC-error response — cmd=0xFF. Normal between tag reads
+        // (Gen2 anti-collision) and continuously when the field is empty. Just skip
+        // it and keep scanning.
+        if(data[0] == FRAME_START && length >= 4 && data[2] == 0xFF) {
+            continue;
+        }
+
+        // Validate frame structure and checksum
+        if(length < 13 || data[0] != FRAME_START || data[length - 1] != FRAME_END) {
+            FURI_LOG_W(UHF_MOD_TAG, "multi_poll: invalid frame, len=%d", (int)length);
+            continue;
+        }
+        if(checksum(data + 1, length - 3) != data[length - 2]) {
+            FURI_LOG_W(UHF_MOD_TAG, "multi_poll: frame checksum fail");
+            continue;
+        }
+
+        // Parse EPC — same layout as m100_single_poll (data[6]=PC_hi, data[7]=PC_lo)
+        uint16_t pc = data[6];
+        size_t epc_len = (pc >> 3) * 2;
+        pc = (uint16_t)((pc << 8) | data[7]);
+
+        if(length < (size_t)(8 + epc_len + 4)) {
+            FURI_LOG_W(
+                UHF_MOD_TAG,
+                "multi_poll: epc_len %d exceeds frame len %d",
+                (int)epc_len,
+                (int)length);
+            continue;
+        }
+
+        uint16_t crc =
+            (uint16_t)(((uint16_t)data[8 + epc_len] << 8) | data[8 + epc_len + 1]);
+        if(crc16_genibus(data + 6, epc_len + 2) != crc) {
+            FURI_LOG_W(UHF_MOD_TAG, "multi_poll: EPC CRC fail");
+            continue;
+        }
+
+        uint8_t* epc_data = data + 8;
+        // RSSI is at data[5] per §2.3.2 frame layout: BB type cmd PL_MSB PL_LSB RSSI ...
+        int8_t rssi = (int8_t)data[5];
+
+        // Deduplicate — skip if EPC already present in the list; but update RSSI (live)
+        bool duplicate = false;
+        for(size_t i = 0; i < wrapper->tag_count; i++) {
+            UHFTag* existing = wrapper->tags[i];
+            if(existing->epc != NULL && existing->epc->size == epc_len &&
+               memcmp(existing->epc->data, epc_data, epc_len) == 0) {
+                existing->epc->rssi = rssi; // live RSSI update
+                duplicate = true;
+                break;
+            }
+        }
+        if(duplicate) {
+            continue;
+        }
+
+        // Allocate new tag, populate EPC fields, add to wrapper list
+        UHFTag* new_tag = uhf_tag_alloc();
+        uhf_tag_reset(new_tag);
+        uhf_tag_set_epc_pc(new_tag, pc);
+        uhf_tag_set_epc_crc(new_tag, crc);
+        uhf_tag_set_epc(new_tag, epc_data, epc_len);
+        new_tag->epc->rssi = rssi;
+
+        if(!uhf_tag_wrapper_add_tag(wrapper, new_tag)) {
+            // Guard: shouldn't happen since loop condition checks tag_count
+            FURI_LOG_W(UHF_MOD_TAG, "multi_poll: wrapper add failed");
+            uhf_tag_free(new_tag);
+            break;
+        }
+        result = M100SuccessResponse;
+        FURI_LOG_I(UHF_MOD_TAG, "multi_poll: added unique tag %d", (int)wrapper->tag_count);
+
+        // Fire a live event so the view updates the # EPCs counter and current tag
+        // in real time (issue #4).
+        if(worker->callback) {
+            worker->callback(UHFWorkerEventCardDetected, worker->ctx);
+        }
+    }
+
+    // Always stop the inventory round regardless of exit path
+    uhf_buffer_reset(buffer);
+    uhf_uart_send_wait(
+        uart,
+        (uint8_t*)&CMD_STOP_MULTIPLE_POLLING.cmd[0],
+        CMD_STOP_MULTIPLE_POLLING.length);
+    // Drain the stop-ack frame (module responds quickly; 20 rounds is sufficient)
+    for(int round = 0; round < 20; round++) {
+        uhf_uart_tick_reset(uart);
+        while(!uhf_is_buffer_closed(buffer) && !uhf_uart_tick(uart)) {}
+        if(uhf_is_buffer_closed(buffer)) break;
+    }
+    uhf_uart_tick_reset(uart);
+
+    FURI_LOG_I(
+        UHF_MOD_TAG,
+        "multi_poll: done, total tags=%d, result=%d",
+        (int)wrapper->tag_count,
+        (int)result);
+    return result;
+}
+
 M100ResponseType m100_set_select(M100Module* module, UHFTag* uhf_tag) {
     // Set select
     uint8_t cmd[MAX_BUFFER_SIZE];
@@ -266,11 +527,9 @@ M100ResponseType m100_read_label_data_storage(
     cmd[8] = access_pwd & 0xFF;
     // set mem bank
     cmd[9] = (uint8_t)bank;
-    // set word counter
-
-    if(bank == ReservedBank) {
-        word_count = 4;
-    }
+    // set word counter (let the binary search control DL for all banks,
+    // including ReservedBank; the old hardcode of 4 prevented the search
+    // from ever probing other sizes)
     cmd[12] = (word_count >> 8) & 0xFF;
     cmd[13] = word_count & 0xFF;
     // calc checksum
@@ -286,8 +545,18 @@ M100ResponseType m100_read_label_data_storage(
     payload_len = (payload_len << 8) + data[4];
 
     if(rtn_command == 0xFF) {
-        if(payload_len == 0x01) return M100NoTagResponse;
-        return M100MemoryOverrun;
+        // The error code is the first payload byte (data[5]); it is NOT implied by
+        // the payload length. A 0x09 (tag-not-found / EPC mismatch) frame can carry
+        // a PC+EPC echo, giving it the SAME payload_len (0x10) as a real 0xA3
+        // memory-overrun. Classifying by length alone made every transient RF miss
+        // look like the bank-length boundary and truncated the read. Distinguish by
+        // the actual code byte instead.
+        uint8_t error_code = (payload_len >= 1) ? data[5] : 0x09;
+        if(error_code == 0xA3) return M100MemoryOverrun; // DL is past the end of the bank
+        if(error_code == 0x16) return M100APWrong; // wrong access password
+        // 0x09 and any other Gen2 error (locked/privileges/etc.) are NOT a length
+        // boundary; report as no-tag so the caller retries rather than truncating.
+        return M100NoTagResponse;
     }
 
     size_t ptr_offset = 5 /*<-ptr offset*/ + uhf_tag_get_epc_size(uhf_tag) + 3 /*<-pc + ul*/;
@@ -300,6 +569,10 @@ M100ResponseType m100_read_label_data_storage(
     } else if(bank == ReservedBank) {
         uhf_tag_set_kill_pwd(uhf_tag, data + ptr_offset, bank_data_length);
         uhf_tag_set_access_pwd(uhf_tag, data + ptr_offset, bank_data_length);
+        // Store the full Reserved bank exactly as read (variable length, incl. any
+        // words past the two passwords) for display/save. The passwords above remain
+        // the authoritative bytes 0-3 / 4-7; this buffer is display-only.
+        uhf_tag_set_reserved(uhf_tag, data + ptr_offset, bank_data_length);
     }
 
     return M100SuccessResponse;
@@ -606,6 +879,20 @@ bool m100_set_working_region(M100Module* module, WorkingRegion region) {
     return true;
 }
 
+bool m100_get_transmitting_power(M100Module* module, uint16_t* power_raw) {
+    M100ResponseType result = setup_and_send_rx(
+        module,
+        (uint8_t*)&CMD_GET_TRANSMITTING_POWER.cmd[0],
+        CMD_GET_TRANSMITTING_POWER.length);
+    if(result != M100SuccessResponse) return false;
+    uint8_t* data = uhf_buffer_get_data(module->uart->buffer);
+    size_t length = uhf_buffer_get_size(module->uart->buffer);
+    // Expect: BB 01 B7 00 02 HH LL cs 7E (9 bytes)
+    if(length < 9 || data[2] != 0xB7) return false;
+    *power_raw = ((uint16_t)data[5] << 8) | data[6];
+    return true;
+}
+
 bool m100_set_transmitting_power(M100Module* module, uint16_t power) {
     size_t length = CMD_SET_TRANSMITTING_POWER.length;
     uint8_t cmd[length];
@@ -613,9 +900,40 @@ bool m100_set_transmitting_power(M100Module* module, uint16_t power) {
     cmd[5] = (power >> 8) & 0xFF;
     cmd[6] = power & 0xFF;
     cmd[length - 2] = checksum(cmd + 1, length - 3);
-    setup_and_send_rx(module, cmd, length);
-    module->transmitting_power = power;
+    M100ResponseType result = setup_and_send_rx(module, cmd, length);
+    if(result == M100SuccessResponse) {
+        module->transmitting_power = power;
+    }
+    return result == M100SuccessResponse;
+}
+
+bool m100_get_query_params(M100Module* module, uint8_t* session, uint8_t* target) {
+    M100ResponseType result = setup_and_send_rx(
+        module,
+        (uint8_t*)&CMD_GET_QUERY_PARAMETERS.cmd[0],
+        CMD_GET_QUERY_PARAMETERS.length);
+    if(result != M100SuccessResponse) return false;
+    uint8_t* data = uhf_buffer_get_data(module->uart->buffer);
+    size_t length = uhf_buffer_get_size(module->uart->buffer);
+    // Expect: BB 01 0D 00 02 b0 b1 cs 7E (9 bytes)
+    if(length < 9 || data[2] != 0x0D) return false;
+    *session = data[5] & 0x03;
+    *target = (data[6] >> 7) & 0x01;
     return true;
+}
+
+// Set EPC Gen2 Query parameters (§2.14).
+// Fixed fields: DR=8, M=1, TRext=pilot, Sel=ALL, Q=4.
+// Byte 0: 0x10 | (session & 0x03)  — bits[1:0] = Session
+// Byte 1: ((target & 0x01) << 7) | 0x20  — bit7=Target, bits[6:3]=Q=4
+bool m100_set_query_params(M100Module* module, uint8_t session, uint8_t target) {
+    uint8_t b0 = 0x10 | (session & 0x03);
+    uint8_t b1 = ((target & 0x01) << 7) | 0x20;
+    // Frame: BB 00 0E 00 02 b0 b1 checksum 7E
+    uint8_t cmd[9] = {0xBB, 0x00, 0x0E, 0x00, 0x02, b0, b1, 0x00, 0x7E};
+    cmd[7] = checksum(cmd + 1, 6); // sum(Type..params) & 0xFF
+    M100ResponseType result = setup_and_send_rx(module, cmd, sizeof(cmd));
+    return result == M100SuccessResponse;
 }
 
 bool m100_set_freq_hopping(M100Module* module, bool hopping) {

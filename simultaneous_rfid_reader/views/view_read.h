@@ -20,6 +20,8 @@ bool uhf_reader_view_read_custom_event_callback(uint32_t event, void* context);
 
 void uhf_reader_view_read_timer_callback(void* context);
 
+void uhf_deep_read_worker_callback(UHFWorkerEvent event, void* ctx);
+
 void uhf_reader_save_text_updated(void* context);
 
 void view_read_alloc(UHFReaderApp* App);

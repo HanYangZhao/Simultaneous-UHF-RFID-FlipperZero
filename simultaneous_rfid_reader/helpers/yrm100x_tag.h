@@ -12,7 +12,10 @@
 */
 
 
-#define MAX_BANK_SIZE 200
+#define EPC_MAX_BANK_SIZE  32   // 96-bit EPC = 12 B; 256-bit EPC = 32 B (very generous)
+#define TID_MAX_BANK_SIZE  32   // standard TID 8–16 B; extended up to 32 B
+#define USER_MAX_BANK_SIZE 64   // Gen2 standard user memory ≤ 64 B
+#define RESERVED_MAX_BANK_SIZE 32 // kill+access is 8 B, but some tags expose more readable words
 // storage enum
 typedef enum { ReservedBank, EPCBank, TIDBank, UserBank, KillPwd, AccessPwd, FileZero} BankType;
 
@@ -22,26 +25,29 @@ typedef enum { PermaLock, Lock, Unlock, PermaUnlock} LockType;
 typedef struct {
     uint8_t kill_password[4]; // 4 bytes (32 bits) for kill password 
     uint8_t access_password[4]; // 4 bytes (32 bits) for access password 
+    size_t size; // length of the raw reserved bank as read
+    uint8_t data[RESERVED_MAX_BANK_SIZE]; // full reserved bank contents exactly as returned
 } ReservedMemoryBank;
 
 // EPC Memory Bank
 typedef struct {
     size_t size; // Size of EPC memory data
-    uint8_t data[MAX_BANK_SIZE]; // 2 bytes for CRC16, 2 bytes for PC, and max 14 bytes for EPC
+    uint8_t data[EPC_MAX_BANK_SIZE]; // 2 bytes for CRC16, 2 bytes for PC, and max 14 bytes for EPC
     uint16_t pc;
     uint16_t crc;
+    int8_t rssi; // Last RSSI reading from the poll frame (signed dBm)
 } EPCMemoryBank;
 
 // TID Memory Bank
 typedef struct {
     size_t size; // Size of TID memory data
-    uint8_t data[MAX_BANK_SIZE]; // 4 bytes for Class ID
+    uint8_t data[TID_MAX_BANK_SIZE]; // 4 bytes for Class ID
 } TIDMemoryBank;
 
 // User Memory Bank
 typedef struct {
     size_t size; // Size of user memory data
-    uint8_t data[MAX_BANK_SIZE]; // Assuming max 512 bits (64 bytes) for User Memory
+    uint8_t data[USER_MAX_BANK_SIZE]; // Assuming max 512 bits (64 bytes) for User Memory
 } UserMemoryBank;
 
 // EPC Gen 2 Tag containing all memory banks
@@ -52,13 +58,19 @@ typedef struct {
     UserMemoryBank* user;
 } UHFTag;
 
+#define UHF_TAG_WRAPPER_MAX_TAGS 50
+
 typedef struct UHFTagWrapper {
     UHFTag* uhf_tag;
+    UHFTag* tags[UHF_TAG_WRAPPER_MAX_TAGS];
+    size_t tag_count;
 } UHFTagWrapper;
 
 UHFTagWrapper* uhf_tag_wrapper_alloc();
 void uhf_tag_wrapper_set_tag(UHFTagWrapper* uhf_tag_wrapper, UHFTag* uhf_tag);
 void uhf_tag_wrapper_free(UHFTagWrapper* uhf_tag_wrapper);
+bool uhf_tag_wrapper_add_tag(UHFTagWrapper* uhf_tag_wrapper, UHFTag* uhf_tag);
+void uhf_tag_wrapper_reset_list(UHFTagWrapper* uhf_tag_wrapper);
 
 UHFTag* uhf_tag_alloc();
 void uhf_tag_reset(UHFTag* uhf_tag);
@@ -75,6 +87,8 @@ void uhf_tag_set_tid_size(UHFTag* uhf_tag, size_t size);
 void uhf_tag_set_user(UHFTag* uhf_tag, uint8_t* data_in, size_t size);
 void uhf_tag_set_user_size(UHFTag* uhf_tag, size_t size);
 void uhf_tag_set_reserved(UHFTag* uhf_tag, uint8_t* data_in, size_t size);
+uint8_t* uhf_tag_get_reserved(UHFTag* uhf_tag);
+size_t uhf_tag_get_reserved_size(UHFTag* uhf_tag);
 uint8_t* uhf_tag_get_kill_pwd(UHFTag* uhf_tag);
 uint8_t* uhf_tag_get_access_pwd(UHFTag* uhf_tag);
 uint8_t* uhf_tag_get_epc(UHFTag* uhf_tag);

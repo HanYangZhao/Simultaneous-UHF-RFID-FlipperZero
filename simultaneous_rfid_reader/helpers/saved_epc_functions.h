@@ -17,3 +17,23 @@ void hex_string_to_uint16(const char* hex_string, uint16_t* uint16_array, size_t
 char* combineArrays(const char* array1, const char* array2);
 
 uint32_t bytes_to_uint32(uint8_t* bytes, size_t length);
+
+// Shared writer: appends one tag to Saved_EPCs.txt, updates the Saved submenu
+// and Index_File.txt. All fields are plain colon-free strings.
+void save_uhf_tag_to_file(
+    UHFReaderApp* App,
+    const char* Name,
+    const char* Epc,
+    const char* Tid,
+    const char* Res,
+    const char* Mem,
+    const char* Pc,
+    const char* Crc);
+
+// Text-input result callback for the EPC Dump / Banks Up-key save. Reads the
+// tag fields from App->SaveSourceView and returns to App->SaveReturnView.
+void uhf_reader_save_tag_text_updated(void* context);
+
+// Opens the save text input for the tag currently shown in SourceView,
+// prefilling a default name and arranging to return to ReturnView.
+void uhf_reader_begin_save_tag(UHFReaderApp* App, View* SourceView, uint32_t ReturnView);

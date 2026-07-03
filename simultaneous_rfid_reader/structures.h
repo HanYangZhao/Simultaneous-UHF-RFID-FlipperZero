@@ -61,6 +61,7 @@ typedef enum {
     UHFReaderViewConfigure,
     UHFReaderViewEpcDump,
     UHFReaderViewEpcInfo,
+    UHFReaderViewBankMem,
     UHFReaderViewDelete,
     UHFReaderViewAbout,
     UHFReaderViewRead,
@@ -88,6 +89,11 @@ typedef enum {
     UHFCustomEventReserved = 100,
     UHFCustomEventWorkerExit = 105,
     UHFCustomEventWorkerExitAborted = 106,
+    UHFCustomEventWorkerCardDetected = 107,
+    UHFCustomEventDeepReadDone = 108,
+    UHFCustomEventDeepReadAborted = 109,
+    UHFCustomEventSingleReadDone = 110,
+    UHFCustomEventSingleReadAborted = 111,
 } UHFReaderEventId;
 
 //State of the reader app when communicating with raspberry pi zero over uart
@@ -161,6 +167,8 @@ typedef struct {
     VariableItem* BaudSelection;
     VariableItem* RegionSelection;
     VariableItem* AntennaSelection;
+    VariableItem* SessionSelection;
+    VariableItem* TargetSelection;
     Widget* WidgetAbout;
 
     View* ViewRead;
@@ -170,6 +178,11 @@ typedef struct {
     View* ViewDeleteSuccess;
     View* ViewEpc;
     View* ViewEpcInfo;
+    View* ViewBankMem;
+
+    // Source view model + return view for the shared Up-key save flow
+    View* SaveSourceView;
+    uint32_t SaveReturnView;
 
     char* TempBuffer;
     uint8_t* ApTempBuffer;
@@ -194,10 +207,14 @@ typedef struct {
     char* SettingSavingNames[2];
     char* SettingBaudNames[3];
     char* SettingRegionNames[5];
+    char* SettingSessionNames[4];
+    char* SettingTargetNames[2];
     char* SettingModuleConfigLabel;
     char* SettingSavingConfigLabel;
     char* SettingBaudConfigLabel;
     char* SettingRegionConfigLabel;
+    char* SettingSessionConfigLabel;
+    char* SettingTargetConfigLabel;
     char* SettingLockExecuteConfigLabel;
     char* SettingLockExecuteResult;
 
@@ -231,6 +248,9 @@ typedef struct {
     bool IsReading;
     bool IsWriting;
     bool ReaderConnected;
+    bool DeepReading;
+    bool DeepReadDone;
+    bool DeepReadTimerExpired;
 
     FuriTimer* Timer;
 
@@ -249,6 +269,9 @@ typedef struct {
     uint8_t UHFSaveType;
     uint8_t SettingBaudIndex;
     uint8_t SettingRegionIndex;
+    uint8_t SettingSessionIndex;
+    uint8_t SettingTargetIndex;
+    uint8_t SettingPowerIndex;
     uint8_t SettingLockBankIndex;
     uint8_t SettingLockActionIndex;
     uint8_t Setting1Index;
@@ -368,6 +391,7 @@ typedef struct {
     FuriString* User;
     FuriString* Crc;
     FuriString* Pc;
+    int8_t Rssi;  // Last RSSI reading from the YRM100 poll frame (signed dBm)
     uint32_t CurEpcIndex;
     uint32_t ScrollOffsetEpc;
     char* ScrollingTextEpc;
@@ -377,4 +401,10 @@ typedef struct {
     char* ScrollingTextRes;
     uint32_t ScrollOffsetMem;
     char* ScrollingTextMem;
+    bool IsDeepReading;
+    bool DeepReadDone;
+    // Per-bank memory screen: which bank is shown (0=TID, 1=Reserved, 2=User)
+    // and the vertical scroll offset (in wrapped lines) for long content.
+    uint32_t CurrentBank;
+    uint32_t VScrollLine;
 } UHFRFIDTagModel;

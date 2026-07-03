@@ -73,12 +73,19 @@ char* m100_get_manufacturers(M100Module* module);
 
 void m100_set_baudrate(M100Module* module, uint32_t baudrate);
 bool m100_set_working_region(M100Module* module, WorkingRegion region);
+bool m100_get_transmitting_power(M100Module* module, uint16_t* power_raw);
 bool m100_set_transmitting_power(M100Module* module, uint16_t power);
+bool m100_get_query_params(M100Module* module, uint8_t* session, uint8_t* target);
+bool m100_set_query_params(M100Module* module, uint8_t session, uint8_t target);
 bool m100_set_freq_hopping(M100Module* module, bool hopping);
 bool m100_set_power(M100Module* module, uint8_t* power);
 
+// Forward declaration — full definition in yrm100x_worker.h
+typedef struct UHFWorker UHFWorker;
+
 // gen2 cmds
 M100ResponseType m100_single_poll(M100Module* module, UHFTag* uhf_tag);
+M100ResponseType m100_multi_poll(M100Module* module, UHFTagWrapper* wrapper, UHFWorker* worker);
 M100ResponseType m100_set_select(M100Module* module, UHFTag* uhf_tag);
 M100ResponseType m100_read_label_data_storage(
     M100Module* module,

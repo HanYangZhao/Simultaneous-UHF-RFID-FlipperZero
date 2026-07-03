@@ -9,7 +9,11 @@
 */
 char* convertToHexString(uint8_t* array, size_t length) {
     if(array == NULL || length == 0) {
-        return " ";
+        // Return an owned, NUL-terminated empty string so every caller can free()
+        char* empty = (char*)malloc(2 * sizeof(char));
+        empty[0] = ' ';
+        empty[1] = '\0';
+        return empty;
     }
     FuriString* temp_str = furi_string_alloc();
 
@@ -19,9 +23,10 @@ char* convertToHexString(uint8_t* array, size_t length) {
     const char* furi_str = furi_string_get_cstr(temp_str);
 
     size_t str_len = strlen(furi_str);
-    char* str = (char*)malloc(sizeof(char) * str_len);
+    char* str = (char*)malloc(sizeof(char) * (str_len + 1));
 
     memcpy(str, furi_str, str_len);
+    str[str_len] = '\0';
     furi_string_free(temp_str);
     return str;
 }

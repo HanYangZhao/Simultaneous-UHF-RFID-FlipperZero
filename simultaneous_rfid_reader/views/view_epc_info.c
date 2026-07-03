@@ -14,8 +14,10 @@ void uhf_reader_view_epc_info_draw_callback(Canvas* canvas, void* model) {
     canvas_clear(canvas);
     canvas_set_color(canvas, ColorBlack);
     canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str(canvas, 4, 11, "            EPC Info:");
+    canvas_draw_str(canvas, 44, 11, "Banks");
     canvas_set_font(canvas, FontSecondary);
+    // Up-key save hint (top-left button with up-arrow icon)
+    elements_button_up(canvas, "Save");
     canvas_draw_str(canvas, 4, 22, "EPC: ");
     canvas_draw_str(canvas, 4, 44, "Reserved: ");
     canvas_draw_str(canvas, 4, 33, "TID: ");
@@ -101,6 +103,23 @@ void uhf_reader_view_epc_info_draw_callback(Canvas* canvas, void* model) {
 }
 
 /**
+ * @brief      Input callback for the Banks (EPC) screen.
+ * @details    Pressing Up saves the currently displayed tag, but only when it
+ *             came from a live deep-read (not when viewing an already-saved tag).
+ * @param      event    The event - InputEvent object.
+ * @param      context  The context - UHFReaderApp object.
+ * @return     true if the event was handled, false otherwise.
+*/
+bool uhf_reader_view_epc_info_input_callback(InputEvent* event, void* context) {
+    UHFReaderApp* App = (UHFReaderApp*)context;
+    if(event->type == InputTypeShort && event->key == InputKeyUp && App->DeepReadDone) {
+        uhf_reader_begin_save_tag(App, App->ViewEpcInfo, UHFReaderViewEpcInfo);
+        return true;
+    }
+    return false;
+}
+
+/**
  * @brief      Callback when the user exits the tag info screen.
  * @details    This function is called when the user exits the tag info screen.
  * @param      context  The context - not used
@@ -163,42 +182,46 @@ void uhf_reader_view_epc_info_enter_callback(void* context) {
     uint32_t Period = furi_ms_to_ticks(200);
     UHFReaderApp* App = (UHFReaderApp*)context;
 
-    //Create FuriStrings for storing saved UHF tag values
-    FuriString* TempStr = furi_string_alloc();
-    FuriString* TempTag = furi_string_alloc();
+    // When arriving from the EPC dump after a deep-read, the ViewEpcInfo model
+    // was already populated by the DeepReadDone handler — skip the file read.
+    if(!App->DeepReadDone) {
+        //Create FuriStrings for storing saved UHF tag values
+        FuriString* TempStr = furi_string_alloc();
+        FuriString* TempTag = furi_string_alloc();
 
-    //Open the saved epcs text file
-    if(!flipper_format_file_open_existing(App->EpcFile, APP_DATA_PATH("Saved_EPCs.txt"))) {
-        FURI_LOG_E(TAG, "Failed to open Saved file");
-        flipper_format_file_close(App->EpcFile);
-
-    } else {
-        //Read from the file selecting the current tag the user picked
-        furi_string_printf(TempStr, "Tag%ld", App->SelectedTagIndex);
-        if(!flipper_format_read_string(App->EpcFile, furi_string_get_cstr(TempStr), TempTag)) {
-            FURI_LOG_D(TAG, "Could not read tag %ld data", App->SelectedTagIndex);
-        } else {
-            //Grabbing the extracted tid, reserved memory, user memory, and epc from the file to display to the user
-            const char* InputString = furi_string_get_cstr(TempTag);
-            bool Redraw = true;
-            with_view_model(
-                App->ViewEpcInfo,
-                UHFRFIDTagModel * model,
-                {
-                    furi_string_set(model->Epc, extract_epc(InputString));
-                    furi_string_set(model->Tid, extract_tid(InputString));
-                    furi_string_set(model->Reserved, extract_res(InputString));
-                    furi_string_set(model->User, extract_mem(InputString));
-                },
-                Redraw);
-            //Close the file
+        //Open the saved epcs text file
+        if(!flipper_format_file_open_existing(App->EpcFile, APP_DATA_PATH("Saved_EPCs.txt"))) {
+            FURI_LOG_E(TAG, "Failed to open Saved file");
             flipper_format_file_close(App->EpcFile);
-        }
-    }
 
-    //Freeing all FuriStrings used
-    furi_string_free(TempTag);
-    furi_string_free(TempStr);
+        } else {
+            //Read from the file selecting the current tag the user picked
+            furi_string_printf(TempStr, "Tag%ld", App->SelectedTagIndex);
+            if(!flipper_format_read_string(App->EpcFile, furi_string_get_cstr(TempStr), TempTag)) {
+                FURI_LOG_D(TAG, "Could not read tag %ld data", App->SelectedTagIndex);
+            } else {
+                //Grabbing the extracted tid, reserved memory, user memory, and epc from the file to display to the user
+                const char* InputString = furi_string_get_cstr(TempTag);
+                bool Redraw = true;
+                with_view_model(
+                    App->ViewEpcInfo,
+                    UHFRFIDTagModel * model,
+                    {
+                        furi_string_set(model->Epc, extract_epc(InputString));
+                        furi_string_set(model->Tid, extract_tid(InputString));
+                        furi_string_set(model->Reserved, extract_res(InputString));
+                        furi_string_set(model->User, extract_mem(InputString));
+                    },
+                    Redraw);
+                //Close the file
+                flipper_format_file_close(App->EpcFile);
+            }
+        }
+
+        //Freeing all FuriStrings used
+        furi_string_free(TempTag);
+        furi_string_free(TempStr);
+    }
 
     //Start the timer
     furi_assert(App->Timer == NULL);
@@ -228,6 +251,7 @@ void view_epc_info_alloc(UHFReaderApp* App) {
     //Allocating the view and setting all callback functions
     App->ViewEpcInfo = view_alloc();
     view_set_draw_callback(App->ViewEpcInfo, uhf_reader_view_epc_info_draw_callback);
+    view_set_input_callback(App->ViewEpcInfo, uhf_reader_view_epc_info_input_callback);
     view_set_previous_callback(App->ViewEpcInfo, uhf_reader_navigation_exit_epc_info_callback);
     view_set_enter_callback(App->ViewEpcInfo, uhf_reader_view_epc_info_enter_callback);
     view_set_exit_callback(App->ViewEpcInfo, uhf_reader_view_epc_info_exit_callback);
@@ -250,6 +274,8 @@ void view_epc_info_alloc(UHFReaderApp* App) {
     ModelEpcInfo->Epc = EpcInfo;
     ModelEpcInfo->Tid = TidMemEpcInfo;
     ModelEpcInfo->Reserved = ReservedMemEpcInfo;
+    ModelEpcInfo->Crc = furi_string_alloc_set("----");
+    ModelEpcInfo->Pc = furi_string_alloc_set("----");
     ModelEpcInfo->ScrollOffsetEpc = 0;
     ModelEpcInfo->ScrollingTextEpc = "EPC VALUE HERE";
     ModelEpcInfo->ScrollOffsetTid = 0;

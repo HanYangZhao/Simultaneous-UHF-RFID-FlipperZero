@@ -5,5 +5,3 @@ dist/*
 .editorconfig
 .env
 .ufbt
-.agents
-.DS_Store
