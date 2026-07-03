@@ -13,7 +13,17 @@
 #define UHF_UART_DEFAULT_BAUDRATE 115200
 #define UHF_UART_FRAME_START 0xBB
 #define UHF_UART_FRAME_END 0x7E
-#define UHF_UART_WAIT_TICK 10000
+// First-byte timeout for a command response, expressed in busy-spin iterations.
+// The ISR resets this counter on every received byte, so it effectively bounds how
+// long we wait for the module to START replying. At the edge of read range the
+// module runs internal Gen2 retries and can take a long time before its first byte.
+// Logs showed the module's worst-case first-byte latency landing right around a
+// 40000-tick timeout: the reply would arrive just after we gave up, corrupt the
+// *next* command's window, and get discarded as a stale frame (frame desync) —
+// throwing away the real answer and forcing a full retry. Sizing this comfortably
+// above that worst-case latency keeps each reply inside its own window, which
+// eliminates most of the desync churn and the wasted retry cycles.
+#define UHF_UART_WAIT_TICK 70000
 
 typedef void (*CallbackFunction)(uint8_t *data, void *ctx);
 

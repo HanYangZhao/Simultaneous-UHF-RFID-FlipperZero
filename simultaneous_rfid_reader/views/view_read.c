@@ -75,13 +75,12 @@ void uhf_reader_view_read_draw_callback(Canvas* canvas, void* model) {
     }
 
     if(!MyModel->IsReading) {
-        // Up saves the current tag (handled in the input callback)
-        elements_button_up(canvas, "Save");
-        // Down opens the EPC dump screen
-        elements_button_down(canvas, "More");
-        elements_button_left(canvas, "Prev");
+        // Up = Prev, Down = Next, Left = Save, Right = More
+        elements_button_up(canvas, "Prev");
+        elements_button_down(canvas, "Next");
+        elements_button_left(canvas, "Save");
         elements_button_center(canvas, "Start");
-        elements_button_right(canvas, "Next");
+        elements_button_right(canvas, "More");
     } else {
         elements_button_center(canvas, "Stop");
     }
@@ -190,54 +189,42 @@ void uhf_reader_save_text_updated(void* context) {
 */
 bool uhf_reader_view_read_input_callback(InputEvent* event, void* context) {
     UHFReaderApp* App = (UHFReaderApp*)context;
-    if(event->key == InputKeyUp && !App->IsReading) {
-        // Handle short press for save menu
-        if(event->type == InputTypeShort) {
-            //Setting the text input header
-            text_input_set_header_text(App->SaveInput, "Save EPC");
-            bool Redraw = false;
-            with_view_model(
-                App->ViewRead,
-                UHFReaderConfigModel * model,
-                {
-                    //Prefill a default name of Tag_<last 8 EPC chars>
-                    const char* EpcStr = furi_string_get_cstr(model->EpcValue);
-                    size_t Len = strlen(EpcStr);
-                    const char* Tail = Len > 8 ? EpcStr + (Len - 8) : EpcStr;
-                    snprintf(
-                        App->TempSaveBuffer, App->TempBufferSaveSize, "Tag_%s", Tail);
-                },
-                Redraw);
+    // Left = Save
+    if(event->key == InputKeyLeft && !App->IsReading && event->type == InputTypeShort) {
+        //Setting the text input header
+        text_input_set_header_text(App->SaveInput, "Save EPC");
+        bool Redraw = false;
+        with_view_model(
+            App->ViewRead,
+            UHFReaderConfigModel * model,
+            {
+                //Prefill a default name of Tag_<last 8 EPC chars>
+                const char* EpcStr = furi_string_get_cstr(model->EpcValue);
+                size_t Len = strlen(EpcStr);
+                const char* Tail = Len > 8 ? EpcStr + (Len - 8) : EpcStr;
+                snprintf(
+                    App->TempSaveBuffer, App->TempBufferSaveSize, "Tag_%s", Tail);
+            },
+            Redraw);
 
-            //Set the text input result callback function
-            bool ClearPreviousText = false;
-            text_input_set_result_callback(
-                App->SaveInput,
-                uhf_reader_save_text_updated,
-                App,
-                App->TempSaveBuffer,
-                App->TempBufferSaveSize,
-                ClearPreviousText);
-            view_set_previous_callback(
-                text_input_get_view(App->SaveInput), uhf_reader_navigation_read_callback);
-            view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewSaveInput);
-
-            return true;
-        }
-        // Handle press and release for scrolling pause
-        else if(event->type == InputTypePress || event->type == InputTypeRelease) {
-            with_view_model(
-                App->ViewRead,
-                UHFReaderConfigModel * model,
-                { model->IsScrolling = (event->type == InputTypePress); },
-                true);
-            return true;
-        }
+        //Set the text input result callback function
+        bool ClearPreviousText = false;
+        text_input_set_result_callback(
+            App->SaveInput,
+            uhf_reader_save_text_updated,
+            App,
+            App->TempSaveBuffer,
+            App->TempBufferSaveSize,
+            ClearPreviousText);
+        view_set_previous_callback(
+            text_input_get_view(App->SaveInput), uhf_reader_navigation_read_callback);
+        view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewSaveInput);
+        return true;
     }
     //Handles all short input types
-    else if(event->type == InputTypeShort) {
-        //If the user presses the left button while the app is not reading (M6E/M7E readers)
-        if(event->key == InputKeyLeft && !App->IsReading && App->UHFModuleType != YRM100X_MODULE) {
+    if(event->type == InputTypeShort) {
+        //Up = Prev: navigate to previous EPC
+        if(event->key == InputKeyUp && !App->IsReading && App->UHFModuleType != YRM100X_MODULE) {
             bool Redraw = true;
 
             with_view_model(
@@ -285,7 +272,7 @@ bool uhf_reader_view_read_input_callback(InputEvent* event, void* context) {
         }
         //Increment the current epc index if the app is not reading
         else if(
-            event->key == InputKeyRight && !App->IsReading &&
+            event->key == InputKeyDown && !App->IsReading &&
             App->UHFModuleType != YRM100X_MODULE) {
             bool Redraw = true;
             with_view_model(
@@ -331,7 +318,7 @@ bool uhf_reader_view_read_input_callback(InputEvent* event, void* context) {
         }
         //YRM100: navigate to the previous collected EPC in the multi-tag list
         else if(
-            event->key == InputKeyLeft && !App->IsReading &&
+            event->key == InputKeyUp && !App->IsReading &&
             App->UHFModuleType == YRM100X_MODULE) {
             bool Redraw = true;
             UHFTagWrapper* wrapper = App->YRM100XWorker->uhf_tag_wrapper;
@@ -382,7 +369,7 @@ bool uhf_reader_view_read_input_callback(InputEvent* event, void* context) {
         }
         //YRM100: navigate to the next collected EPC in the multi-tag list
         else if(
-            event->key == InputKeyRight && !App->IsReading &&
+            event->key == InputKeyDown && !App->IsReading &&
             App->UHFModuleType == YRM100X_MODULE) {
             bool Redraw = true;
             UHFTagWrapper* wrapper = App->YRM100XWorker->uhf_tag_wrapper;
@@ -431,8 +418,8 @@ bool uhf_reader_view_read_input_callback(InputEvent* event, void* context) {
             return true;
         }
 
-        //If the down button is pressed, navigate to the EPC dump screen
-        else if(event->key == InputKeyDown && !App->IsReading) {
+        //If the right button is pressed, navigate to the EPC dump screen
+        else if(event->key == InputKeyRight && !App->IsReading) {
             // Sync deep-read state into EPC dump model before switching
             with_view_model(
                 App->ViewEpc,
@@ -519,21 +506,10 @@ void uhf_reader_view_read_enter_callback(void* context) {
 void uhf_read_tag_worker_callback(UHFWorkerEvent event, void* ctx) {
     UHFReaderApp* App = (UHFReaderApp*)ctx;
 
-    with_view_model(
-        App->ViewRead,
-        UHFReaderConfigModel * model,
-        {
-            uint32_t Len = strlen(model->ScrollingText);
-
-            //Incrementing each offset
-            model->ScrollOffset++;
-
-            //Check the bounds of the offset and reset if necessary
-            if(model->ScrollOffset >= Len) {
-                model->ScrollOffset = 0;
-            }
-        },
-        true);
+    // NOTE: do NOT call with_view_model() here — this function runs on the
+    // worker OS thread, not the GUI thread. Triggering a ViewPort redraw from
+    // the worker thread causes the ViewPort lockup warning. Scroll animation is
+    // driven by the periodic timer on the GUI thread instead.
 
     if(event == UHFWorkerEventSuccess || event == UHFWorkerEventNoTagDetected) {
         notification_message(App->Notifications, &uhf_sequence_blink_stop);
@@ -749,6 +725,52 @@ bool uhf_reader_view_read_custom_event_callback(uint32_t event, void* context) {
                 // Starting a new scan — reset deep-read state
                 App->DeepReadDone = false;
                 App->DeepReadTimerExpired = false;
+
+                // Clear all tags from the previous scan immediately.
+                App->NumberOfEpcsToRead = 0;
+                App->NumberOfTidsToRead = 0;
+                App->NumberOfResToRead = 0;
+                App->NumberOfMemToRead = 0;
+                App->CurEpcIndex = 0;
+                App->CurTidIndex = 0;
+                App->CurResIndex = 0;
+                App->CurMemIndex = 0;
+                with_view_model(
+                    App->ViewRead,
+                    UHFReaderConfigModel * model,
+                    {
+                        model->CurEpcIndex = 0;
+                        model->NumEpcsRead = 0;
+                        furi_string_set_str(model->EpcValue, "");
+                    },
+                    false);
+                with_view_model(
+                    App->ViewEpc,
+                    UHFRFIDTagModel * epc_model,
+                    {
+                        furi_string_set_str(epc_model->Epc, "No Tags read");
+                        furi_string_set_str(epc_model->Tid, "---");
+                        furi_string_set_str(epc_model->Reserved, "---");
+                        furi_string_set_str(epc_model->User, "---");
+                        furi_string_set_str(epc_model->Crc, "----");
+                        furi_string_set_str(epc_model->Pc, "----");
+                        epc_model->DeepReadDone = false;
+                        epc_model->IsDeepReading = false;
+                    },
+                    false);
+                with_view_model(
+                    App->ViewBankMem,
+                    UHFRFIDTagModel * bm_model,
+                    {
+                        furi_string_set_str(bm_model->Tid, "");
+                        furi_string_set_str(bm_model->Reserved, "");
+                        furi_string_set_str(bm_model->User, "");
+                        bm_model->CurEpcIndex = 0;
+                        bm_model->VScrollLine = 0;
+                        bm_model->CurrentBank = 0;
+                    },
+                    false);
+
                 notification_message(App->Notifications, &uhf_sequence_blink_start_cyan);
                 if(App->UHFModuleType == M6E_NANO_MODULE ||
                    App->UHFModuleType == M7E_HECTO_MODULE) {

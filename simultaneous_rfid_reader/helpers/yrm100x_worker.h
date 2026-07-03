@@ -22,6 +22,7 @@ typedef enum {
     UHFWorkerStateDetectSingle,
     UHFWorkerStateDetectMultiple,
     UHFWorkerStateDeepReadSelected,
+    UHFWorkerStateReadSingleBank,
     UHFWorkerStateWriteSingle,
     UHFWorkerStateWriteKey,
     //UHFWorkerStateKillTag,
@@ -51,6 +52,8 @@ typedef struct UHFWorker {
     UHFTag* NewTag;
     UHFTag* SelectedTag;
     uint32_t DefaultAP;
+    // Which bank a single-bank read (UHFWorkerStateReadSingleBank) should fetch.
+    BankType TargetBank;
     //uint32_t write_ap;
     void* ctx;
 } UHFWorker;

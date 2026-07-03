@@ -70,6 +70,8 @@ void uhf_tag_reset(UHFTag* uhf_tag) {
     memset(uhf_tag->user->data, 0, USER_MAX_BANK_SIZE);
     memset(uhf_tag->reserved->kill_password, 0, 4);
     memset(uhf_tag->reserved->access_password, 0, 4);
+    uhf_tag->reserved->size = 0;
+    memset(uhf_tag->reserved->data, 0, RESERVED_MAX_BANK_SIZE);
 }
 
 void uhf_tag_free(UHFTag* uhf_tag) {
@@ -94,7 +96,10 @@ void uhf_tag_set_kill_pwd(UHFTag* uhf_tag, uint8_t* data_in, size_t size) {
 
 void uhf_tag_set_access_pwd(UHFTag* uhf_tag, uint8_t* data_in, size_t size) {
     if (size >= 8) {
-        memcpy(uhf_tag->reserved->access_password, data_in + size - 4, 4);
+        // Access password is always Reserved words 2-3 (bytes 4-7), regardless of how
+        // many extra words the bank read returned. Anchoring to the tail broke once
+        // the reserved read grew past 8 bytes.
+        memcpy(uhf_tag->reserved->access_password, data_in + 4, 4);
     }
     else if (size >= 4) {
         memcpy(uhf_tag->reserved->access_password, data_in, 4);
@@ -106,6 +111,7 @@ void uhf_tag_set_epc_crc(UHFTag* uhf_tag, uint16_t crc) {
 }
 
 void uhf_tag_set_epc(UHFTag* uhf_tag, uint8_t* data_in, size_t size) {
+    if(size > EPC_MAX_BANK_SIZE) size = EPC_MAX_BANK_SIZE;
     memcpy(uhf_tag->epc->data, data_in, size);
     uhf_tag->epc->size = size;
 }
@@ -115,6 +121,7 @@ void uhf_tag_set_epc_size(UHFTag* uhf_tag, size_t size) {
 }
 
 void uhf_tag_set_tid(UHFTag* uhf_tag, uint8_t* data_in, size_t size) {
+    if(size > TID_MAX_BANK_SIZE) size = TID_MAX_BANK_SIZE;
     memcpy(uhf_tag->tid->data, data_in, size);
     uhf_tag->tid->size = size;
 }
@@ -124,6 +131,7 @@ void uhf_tag_set_tid_size(UHFTag* uhf_tag, size_t size) {
 }
 
 void uhf_tag_set_user(UHFTag* uhf_tag, uint8_t* data_in, size_t size) {
+    if(size > USER_MAX_BANK_SIZE) size = USER_MAX_BANK_SIZE;
     memcpy(uhf_tag->user->data, data_in, size);
     uhf_tag->user->size = size;
 }
@@ -171,5 +179,19 @@ uint8_t* uhf_tag_get_access_pwd(UHFTag* uhf_tag) {
 }
 uint8_t* uhf_tag_get_kill_pwd(UHFTag* uhf_tag) {
     return uhf_tag->reserved->kill_password;
+}
+
+void uhf_tag_set_reserved(UHFTag* uhf_tag, uint8_t* data_in, size_t size) {
+    if(size > RESERVED_MAX_BANK_SIZE) size = RESERVED_MAX_BANK_SIZE;
+    memcpy(uhf_tag->reserved->data, data_in, size);
+    uhf_tag->reserved->size = size;
+}
+
+uint8_t* uhf_tag_get_reserved(UHFTag* uhf_tag) {
+    return uhf_tag->reserved->data;
+}
+
+size_t uhf_tag_get_reserved_size(UHFTag* uhf_tag) {
+    return uhf_tag->reserved->size;
 }
 

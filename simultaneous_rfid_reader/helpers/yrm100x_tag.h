@@ -15,6 +15,7 @@
 #define EPC_MAX_BANK_SIZE  32   // 96-bit EPC = 12 B; 256-bit EPC = 32 B (very generous)
 #define TID_MAX_BANK_SIZE  32   // standard TID 8–16 B; extended up to 32 B
 #define USER_MAX_BANK_SIZE 64   // Gen2 standard user memory ≤ 64 B
+#define RESERVED_MAX_BANK_SIZE 32 // kill+access is 8 B, but some tags expose more readable words
 // storage enum
 typedef enum { ReservedBank, EPCBank, TIDBank, UserBank, KillPwd, AccessPwd, FileZero} BankType;
 
@@ -24,6 +25,8 @@ typedef enum { PermaLock, Lock, Unlock, PermaUnlock} LockType;
 typedef struct {
     uint8_t kill_password[4]; // 4 bytes (32 bits) for kill password 
     uint8_t access_password[4]; // 4 bytes (32 bits) for access password 
+    size_t size; // length of the raw reserved bank as read
+    uint8_t data[RESERVED_MAX_BANK_SIZE]; // full reserved bank contents exactly as returned
 } ReservedMemoryBank;
 
 // EPC Memory Bank
@@ -84,6 +87,8 @@ void uhf_tag_set_tid_size(UHFTag* uhf_tag, size_t size);
 void uhf_tag_set_user(UHFTag* uhf_tag, uint8_t* data_in, size_t size);
 void uhf_tag_set_user_size(UHFTag* uhf_tag, size_t size);
 void uhf_tag_set_reserved(UHFTag* uhf_tag, uint8_t* data_in, size_t size);
+uint8_t* uhf_tag_get_reserved(UHFTag* uhf_tag);
+size_t uhf_tag_get_reserved_size(UHFTag* uhf_tag);
 uint8_t* uhf_tag_get_kill_pwd(UHFTag* uhf_tag);
 uint8_t* uhf_tag_get_access_pwd(UHFTag* uhf_tag);
 uint8_t* uhf_tag_get_epc(UHFTag* uhf_tag);

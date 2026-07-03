@@ -2,30 +2,22 @@
 #include "view_read.h"
 #include "../helpers/saved_epc_functions.h"
 
-// ─── 5-second deep-read timeout ──────────────────────────────────────────────
-// Called from the FuriTimer thread: just flags the expiry and changes the
-// worker state to Stop. The worker callback then fires with Aborted and
-// the event handler promotes that to a DeepReadDone (show whatever was read).
-static void uhf_deep_read_timeout_callback(void* ctx) {
-    UHFReaderApp* App = (UHFReaderApp*)ctx;
-    App->DeepReadTimerExpired = true;
-    uhf_worker_change_state(App->YRM100XWorker, UHFWorkerStateStop);
-}
-
 // ─── Draw callback ────────────────────────────────────────────────────────────
 void uhf_reader_view_epc_draw_callback(Canvas* canvas, void* model) {
     UHFRFIDTagModel* MyModel = (UHFRFIDTagModel*)model;
 
     canvas_clear(canvas);
     canvas_set_color(canvas, ColorBlack);
+    // "EPC" headline top-left, matching the memory screens style
     canvas_set_font(canvas, FontPrimary);
+    canvas_draw_str(canvas, 0, 11, "EPC");
     canvas_set_font(canvas, FontSecondary);
-    // Up-key save hint (top-left button with up-arrow icon)
-    elements_button_up(canvas, "Save");
-    // RSSI in top-right corner — e.g. "Rssi:-55"
+    // RSSI top-right
     char RssiStr[16];
-    snprintf(RssiStr, sizeof(RssiStr), "RSSI: %d dBm", (int)MyModel->Rssi);
-    canvas_draw_str(canvas, 56, 11, RssiStr);
+    snprintf(RssiStr, sizeof(RssiStr), "RSSI:%ddBm", (int)MyModel->Rssi);
+    canvas_draw_str_aligned(canvas, 128, 11, AlignRight, AlignBottom, RssiStr);
+    // Left-key save hint (bottom-left button)
+    elements_button_left(canvas, "Save");
 
     // EPC value — wrap at 20 chars per line (120px fits 128px display)
     const char* EpcStr = furi_string_get_cstr(MyModel->Epc);
@@ -53,18 +45,9 @@ void uhf_reader_view_epc_draw_callback(Canvas* canvas, void* model) {
     canvas_draw_str(canvas, 70, 44, "PC:");
     canvas_draw_str(canvas, 88, 44, furi_string_get_cstr(MyModel->Pc));
 
-    // Dynamic button hints
-    if(MyModel->IsDeepReading) {
-        canvas_draw_str(canvas, 38, 55, "Reading...");
-        elements_button_right(canvas, "Actions");
-    } else if(MyModel->DeepReadDone) {
-        elements_button_left(canvas, "\x19 Banks");  // \x19 = down-arrow glyph in Flipper font
-        elements_button_center(canvas, "Scan");
-        elements_button_right(canvas, "Action");
-    } else {
-        elements_button_center(canvas, "Banks");
-        elements_button_right(canvas, "Action");
-    }
+    // Action button hint (center) and the "More" button bottom-right.
+    elements_button_center(canvas, "Action");
+    elements_button_right(canvas, "More");
 }
 
 // ─── Navigation callbacks ─────────────────────────────────────────────────────
@@ -84,73 +67,8 @@ bool uhf_reader_view_epc_input_callback(InputEvent* event, void* context) {
 
     if(event->type != InputTypeShort) return false;
 
-    // Back during deep-read: cancel (don't navigate away)
-    if(event->key == InputKeyBack && App->DeepReading) {
-        uhf_worker_change_state(App->YRM100XWorker, UHFWorkerStateStop);
-        // Worker callback fires → UHFCustomEventDeepReadAborted → cleans up
-        return true;
-    }
-
-    // Center: start deep-read (only for YRM100 with a tag selected, not already reading)
-    if(event->key == InputKeyOk && !App->DeepReading &&
-       App->UHFModuleType == YRM100X_MODULE && App->NumberOfEpcsToRead > 0) {
-        UHFTagWrapper* wrapper = App->YRM100XWorker->uhf_tag_wrapper;
-        uint32_t idx = App->CurEpcIndex;
-        if(idx >= 1 && idx <= wrapper->tag_count) {
-            // Copy selected EPC onto SelectedTag
-            UHFTag* selected = wrapper->tags[idx - 1];
-            UHFTag* target = App->YRM100XWorker->SelectedTag;
-            uhf_tag_reset(target);
-            uhf_tag_set_epc(target, selected->epc->data, selected->epc->size);
-            uhf_tag_set_epc_pc(target, selected->epc->pc);
-            uhf_tag_set_epc_crc(target, selected->epc->crc);
-
-            App->DeepReading = true;
-            App->DeepReadDone = false;
-            App->DeepReadTimerExpired = false;
-
-            // Refresh RSSI to show current value while "Reading..." is displayed
-            int8_t current_rssi = selected->epc->rssi;
-
-            with_view_model(
-                App->ViewEpc,
-                UHFRFIDTagModel * model,
-                {
-                    model->IsDeepReading = true;
-                    model->DeepReadDone = false;
-                    model->Rssi = current_rssi;
-                },
-                true);
-
-            notification_message(App->Notifications, &uhf_sequence_blink_start_cyan);
-
-            // Ensure any previous worker run has fully exited before restarting
-            uhf_worker_stop(App->YRM100XWorker);
-
-            // Start worker
-            uhf_worker_start(
-                App->YRM100XWorker,
-                UHFWorkerStateDeepReadSelected,
-                uhf_deep_read_worker_callback,
-                App);
-
-            // Start 5-second one-shot timeout (defensive: free any stale timer)
-            if(App->Timer) {
-                furi_timer_stop(App->Timer);
-                furi_timer_free(App->Timer);
-                App->Timer = NULL;
-            }
-            App->Timer = furi_timer_alloc(
-                uhf_deep_read_timeout_callback, FuriTimerTypeOnce, App);
-            furi_timer_start(App->Timer, furi_ms_to_ticks(5000));
-        }
-        return true;
-    }
-
-    // Right: navigate to TagAction (always available when a tag is selected)
-    if(event->key == InputKeyRight && !App->DeepReading &&
-       App->NumberOfEpcsToRead > 0) {
-        // Set Back on TagAction to return to EPC dump (not the scan screen)
+    // Center (OK): open the Tag Action menu (Write / Lock / Kill).
+    if(event->key == InputKeyOk && App->NumberOfEpcsToRead > 0) {
         view_set_previous_callback(
             submenu_get_view(App->SubmenuTagActions),
             uhf_reader_navigation_banks_to_epc_dump_callback);
@@ -158,16 +76,16 @@ bool uhf_reader_view_epc_input_callback(InputEvent* event, void* context) {
         return true;
     }
 
-    // Left: navigate to Banks screen (only after deep-read is done)
-    if(event->key == InputKeyLeft && App->DeepReadDone) {
-        view_set_previous_callback(
-            App->ViewEpcInfo, uhf_reader_navigation_banks_to_epc_dump_callback);
-        view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewEpcInfo);
+    // Right (More): open the per-bank memory screens, starting at TID.
+    if(event->key == InputKeyRight && App->NumberOfEpcsToRead > 0) {
+        with_view_model(
+            App->ViewBankMem, UHFRFIDTagModel * m, { m->CurrentBank = 0; }, false);
+        view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewBankMem);
         return true;
     }
 
-    // Up: save the currently displayed tag (TID/User saved when available)
-    if(event->key == InputKeyUp && !App->DeepReading && App->NumberOfEpcsToRead > 0) {
+    // Left: save the currently displayed tag (all banks read so far).
+    if(event->key == InputKeyLeft && App->NumberOfEpcsToRead > 0) {
         uhf_reader_begin_save_tag(App, App->ViewEpc, UHFReaderViewEpcDump);
         return true;
     }
@@ -199,14 +117,21 @@ bool uhf_reader_view_epc_custom_event_callback(uint32_t event, void* context) {
 
         // Populate the Banks screen (ViewEpcInfo) with the freshly read data
         UHFTag* tag = App->YRM100XWorker->SelectedTag;
-        uint8_t reserved_buf[8];
-        memcpy(reserved_buf, tag->reserved->kill_password, 4);
-        memcpy(reserved_buf + 4, tag->reserved->access_password, 4);
 
         char* TempEpc = convertToHexString(tag->epc->data, tag->epc->size);
         char* TempTid = convertToHexString(tag->tid->data, tag->tid->size);
         char* TempUser = convertToHexString(tag->user->data, tag->user->size);
-        char* TempRes = convertToHexString(reserved_buf, 8);
+        // Show the full Reserved bank exactly as read (variable length). Fall back to
+        // the two 4-byte passwords only if the full buffer wasn't populated.
+        char* TempRes;
+        if(tag->reserved->size > 0) {
+            TempRes = convertToHexString(tag->reserved->data, tag->reserved->size);
+        } else {
+            uint8_t reserved_buf[8];
+            memcpy(reserved_buf, tag->reserved->kill_password, 4);
+            memcpy(reserved_buf + 4, tag->reserved->access_password, 4);
+            TempRes = convertToHexString(reserved_buf, 8);
+        }
         char* TempCrc = uint16_to_hex_string(tag->epc->crc);
         char* TempPc = uint16_to_hex_string(tag->epc->pc);
 

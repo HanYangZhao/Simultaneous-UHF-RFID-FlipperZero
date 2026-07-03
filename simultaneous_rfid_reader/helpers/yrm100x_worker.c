@@ -53,6 +53,13 @@ UHFTag* send_polling_command(UHFWorker* uhf_worker) {
 }
 
 //Modified by William Riley Haffner to use a default access password that is set through the ap UI
+// Number of times to retry a single word_size probe when the tag fails to
+// answer (RF dropout). A timeout/partial frame does NOT mean the bank ends
+// here — the tag is momentarily out of range — so we retry before deciding.
+// The bank boundary is signalled ONLY by a memory-overrun (0xA3); a timeout is
+// never a boundary, so we retry generously to keep the length discovery exact.
+#define BANK_READ_MAX_RETRIES 10
+
 UHFWorkerEvent read_bank_till_max_length(UHFWorker* uhf_worker, UHFTag* uhf_tag, BankType bank) {
     unsigned int word_low = 0, word_high = 64;
     unsigned int word_size;
@@ -64,11 +71,17 @@ UHFWorkerEvent read_bank_till_max_length(UHFWorker* uhf_worker, UHFTag* uhf_tag,
             FURI_LOG_I(UHF_WK_TAG, "Bank read aborted by user");
             return UHFWorkerEventAborted;
         }
-        if(word_low >= word_high) {
-            FURI_LOG_I(UHF_WK_TAG, "Bank read complete: %d words", word_low);
+        if(word_low > word_high) {
+            FURI_LOG_I(UHF_WK_TAG, "Bank read complete: %u words", word_low - 1);
             return UHFWorkerEventSuccess;
         }
+
         word_size = (word_low + word_high) / 2;
+        if(word_size == 0) {
+            // Range collapsed to zero: no readable words in this bank.
+            FURI_LOG_I(UHF_WK_TAG, "Bank %d: 0 readable words", (int)bank);
+            return UHFWorkerEventSuccess;
+        }
         iterations++;
 
         FURI_LOG_I(
@@ -80,8 +93,40 @@ UHFWorkerEvent read_bank_till_max_length(UHFWorker* uhf_worker, UHFTag* uhf_tag,
             word_high,
             iterations);
 
-        status = m100_read_label_data_storage(
-            uhf_worker->module, uhf_tag, bank, uhf_worker->DefaultAP, word_size);
+        // Probe this word_size, retrying transient RF failures. Only a definitive
+        // answer — SuccessResponse (grow) or MemoryOverrun (shrink) — ends the
+        // retry loop. Empty/validation/checksum failures are RF dropouts: re-select
+        // and try again rather than mistaking silence for the bank boundary.
+        int retries = 0;
+        do {
+            if(uhf_worker->state == UHFWorkerStateStop) {
+                FURI_LOG_I(UHF_WK_TAG, "Bank read aborted by user");
+                return UHFWorkerEventAborted;
+            }
+
+            // Re-apply Select before every probe: the M100 Gen2 session expires
+            // after each Read response so subsequent reads would otherwise see an
+            // empty/no-tag reply even when the tag is still in field.
+            m100_set_select(uhf_worker->module, uhf_tag);
+
+            status = m100_read_label_data_storage(
+                uhf_worker->module, uhf_tag, bank, uhf_worker->DefaultAP, word_size);
+
+            if(status == M100SuccessResponse || status == M100MemoryOverrun) {
+                break; // definitive answer
+            }
+
+            retries++;
+            FURI_LOG_W(
+                UHF_WK_TAG,
+                "Bank %d: transient status=%d at word_size=%d, retry %d/%d",
+                (int)bank,
+                (int)status,
+                word_size,
+                retries,
+                BANK_READ_MAX_RETRIES);
+        } while(retries < BANK_READ_MAX_RETRIES);
+
         FURI_LOG_I(UHF_WK_TAG, "Bank %d: read status=%d", (int)bank, (int)status);
 
         if(status == M100SuccessResponse) {
@@ -89,14 +134,20 @@ UHFWorkerEvent read_bank_till_max_length(UHFWorker* uhf_worker, UHFTag* uhf_tag,
         } else if(status == M100MemoryOverrun) {
             word_high = word_size - 1;
         } else {
-            // Any other response (EmptyResponse, ValidationFail, ChecksumFail, etc.)
-            // is treated as the limit, exit the binary search
-            FURI_LOG_I(
+            // Still failing after all retries. A timeout is NOT a memory boundary —
+            // shrinking here would silently truncate the bank (report fewer words
+            // than the tag actually holds). Since we cannot resolve this length,
+            // abort the bank read and report it as incomplete rather than return
+            // truncated data. Re-scan with the tag held closer/steadier.
+            FURI_LOG_W(
                 UHF_WK_TAG,
-                "Bank %d: unexpected status=%d, treating as limit",
+                "Bank %d: unresolved at word_size=%d after %d retries (status=%d) — "
+                "reporting incomplete",
                 (int)bank,
+                word_size,
+                BANK_READ_MAX_RETRIES,
                 (int)status);
-            word_high = word_size - 1;
+            return UHFWorkerEventFail;
         }
     } while(true);
     return UHFWorkerEventSuccess;
@@ -206,6 +257,36 @@ UHFWorkerEvent deep_read_selected_card(UHFWorker* uhf_worker) {
     }
 
     FURI_LOG_I(UHF_WK_TAG, "=== deep_read_selected_card complete ===");
+    return UHFWorkerEventSuccess;
+}
+
+// Read a single memory bank (uhf_worker->TargetBank) from the already-known
+// SelectedTag. Mirrors deep_read_selected_card but for one bank on demand, so
+// the per-bank memory screens can fetch TID/Reserved/User individually.
+UHFWorkerEvent read_single_bank_selected(UHFWorker* uhf_worker) {
+    UHFTag* uhf_tag = uhf_worker->SelectedTag;
+    BankType bank = uhf_worker->TargetBank;
+    FURI_LOG_I(UHF_WK_TAG, "=== Starting read_single_bank_selected bank=%d ===", (int)bank);
+
+    // Select the specific EPC first (session expires after each read).
+    M100ResponseType set_status;
+    int set_attempts = 0;
+    do {
+        if(uhf_worker->state == UHFWorkerStateStop) {
+            FURI_LOG_I(UHF_WK_TAG, "single read set_select aborted by user");
+            return UHFWorkerEventAborted;
+        }
+        set_attempts++;
+        set_status = m100_set_select(uhf_worker->module, uhf_tag);
+    } while(set_status != M100SuccessResponse);
+
+    UHFWorkerEvent event = read_bank_till_max_length(uhf_worker, uhf_tag, bank);
+    if(event != UHFWorkerEventSuccess) {
+        FURI_LOG_I(UHF_WK_TAG, "single bank %d read failed: %d", (int)bank, (int)event);
+        return event;
+    }
+
+    FURI_LOG_I(UHF_WK_TAG, "=== read_single_bank_selected complete ===");
     return UHFWorkerEventSuccess;
 }
 
@@ -339,6 +420,9 @@ int32_t uhf_worker_task(void* ctx) {
         uhf_worker->callback(event, uhf_worker->ctx);
     } else if(uhf_worker->state == UHFWorkerStateDeepReadSelected) {
         UHFWorkerEvent event = deep_read_selected_card(uhf_worker);
+        uhf_worker->callback(event, uhf_worker->ctx);
+    } else if(uhf_worker->state == UHFWorkerStateReadSingleBank) {
+        UHFWorkerEvent event = read_single_bank_selected(uhf_worker);
         uhf_worker->callback(event, uhf_worker->ctx);
     } else if(uhf_worker->state == UHFWorkerStateWriteSingle) {
         UHFWorkerEvent event = write_single_card(uhf_worker);

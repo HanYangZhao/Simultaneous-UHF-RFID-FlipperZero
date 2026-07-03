@@ -112,6 +112,7 @@ static UHFReaderApp* uhf_reader_app_alloc() {
     view_write_alloc(App);
     view_epc_alloc(App);
     view_epc_info_alloc(App);
+    view_bank_mem_alloc(App);
     view_delete_alloc(App);
     view_delete_success_alloc(App);
     view_about_alloc(App);
@@ -173,6 +174,7 @@ static void uhf_reader_app_free(UHFReaderApp* App) {
     view_about_free(App);
     view_epc_free(App);
     view_epc_info_free(App);
+    view_bank_mem_free(App);
     view_read_free(App);
     view_write_free(App);
     view_config_free(App);

@@ -14,7 +14,7 @@ void uhf_reader_view_epc_info_draw_callback(Canvas* canvas, void* model) {
     canvas_clear(canvas);
     canvas_set_color(canvas, ColorBlack);
     canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str(canvas, 44, 11, "EPC");
+    canvas_draw_str(canvas, 44, 11, "Banks");
     canvas_set_font(canvas, FontSecondary);
     // Up-key save hint (top-left button with up-arrow icon)
     elements_button_up(canvas, "Save");

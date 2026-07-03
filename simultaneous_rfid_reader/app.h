@@ -48,6 +48,7 @@
 #include "views/view_epc.h"
 #include "views/view_delete_success.h"
 #include "views/view_epc_info.h"
+#include "views/view_bank_mem.h"
 #include "views/view_read.h"
 #include "views/view_tag_actions.h"
 #include "views/view_lock.h"
