@@ -710,10 +710,18 @@ M100ResponseType m100_lock_label_data(
 
     //Need to add a check here for an incorrect password. Look for an error code of some sort
     if(rtn_command == 0xFF) {
-        if(payload_len == 0x01 || data[5] == 0x13)
-            return M100NoTagResponse;
+        if(payload_len == 0x01 && data[5] == 0x13)
+            return M100NoTagResponse;       // PL=1: no EPC, tag not found
+        else if(data[5] == 0x13)
+            return M100ValidationFail;      // PL>1: found tag but Lock cmd got no RF response
         else if(data[5] == 0x16)
             return M100APWrong;
+        else if((data[5] & 0xF0) == 0xC0) { // 0xC0|err = EPC Gen2 lock error
+            uint8_t gen2_err = data[5] & 0x0F;
+            if(gen2_err == 0x04)
+                return M100MemoryLocked;    // 0xC4: memory area is permanently locked
+            return M100MemoryOverrun;       // 0xC3: memory overrun, or other Gen2 error
+        }
         return M100MemoryOverrun;
     }
 

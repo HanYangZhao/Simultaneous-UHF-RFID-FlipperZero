@@ -34,6 +34,7 @@ typedef enum {
     M100ValidationFail,
     M100NoTagResponse,
     M100MemoryOverrun,
+    M100MemoryLocked,
     M100EmptyResponse,
     M100ChecksumFail,
     M100APWrong

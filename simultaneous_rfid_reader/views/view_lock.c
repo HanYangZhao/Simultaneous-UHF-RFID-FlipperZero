@@ -139,6 +139,7 @@ void uhf_reader_lock_item_clicked(void* context, uint32_t index) {
 
     //Check if the set AP menu is being selected
     if(index == 1) {
+        free(header);
         // Header to display on the access password input screen.
         byte_input_set_header_text(App->SetApInput, App->SetAccessPasswordPlaceHolder);
         byte_input_set_result_callback(
@@ -186,6 +187,40 @@ void uhf_reader_lock_item_clicked(void* context, uint32_t index) {
             }
         }
         notification_message(App->Notifications, &uhf_sequence_blink_stop);
+
+        // Show a readable result in the popup before returning.
+        popup_reset(PopupLock);
+        const char* result_text;
+        if(returnResponse == M100SuccessResponse) {
+            result_text = "Success!";
+        } else if(returnResponse == M100APWrong) {
+            result_text = "Wrong AP!";
+        } else if(returnResponse == M100NoTagResponse) {
+            result_text = "No Tag Found";
+        } else if(returnResponse == M100ValidationFail) {
+            result_text = "Lock Cmd Failed";
+        } else if(returnResponse == M100MemoryOverrun) {
+            result_text = "Memory\nOverrun";
+        } else if(returnResponse == M100MemoryLocked) {
+            result_text = "Perm Locked!\nCant Change";
+        } else if(returnResponse == M100EmptyResponse) {
+            result_text = "No Response";
+        } else if(returnResponse == M100ChecksumFail) {
+            result_text = "Checksum\nError";
+        } else {
+            snprintf(header, 68, "Failed\nerr=0x%02X", (unsigned)returnResponse);
+            result_text = header;
+        }
+        popup_set_header(PopupLock, result_text, 64, 32, AlignCenter, AlignCenter);
+        // popup_set_icon(PopupLock, 0, 3, &I_RFIDDolphinReceive_97x61);
+        furi_delay_ms(1800);
+
+        // Persist the result in the Execute row of the lock menu.
+        furi_string_set_str(App->DefaultLockResultStr, result_text);
+        variable_item_set_current_value_text(
+            App->SettingLockResultItem,
+            furi_string_get_cstr(App->DefaultLockResultStr));
+
         popup_reset(App->LockPopup);
         view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewLock);
         free(header);
@@ -286,13 +321,24 @@ void uhf_reader_new_ap_updated(void* context) {
     M100ResponseType ret =
         m100_write_access_pwd(App->YRM100XWorker->module, current_ap, App->NewApBuffer);
     notification_message(App->Notifications, &uhf_sequence_blink_stop);
+
     popup_reset(popup);
+    const char* ap_result;
     if(ret == M100SuccessResponse) {
         App->YRM100XWorker->DefaultAP = bytes_to_uint32(App->NewApBuffer, 4);
+        ap_result = "AP Updated!";
         notification_message(App->Notifications, &sequence_success);
+    } else if(ret == M100APWrong) {
+        ap_result = "Wrong AP!";
+        notification_message(App->Notifications, &sequence_error);
     } else {
+        ap_result = "Update Failed!\nNo Tag Found";
         notification_message(App->Notifications, &sequence_error);
     }
+    popup_set_header(popup, ap_result, 64, 32, AlignCenter, AlignCenter);
+    popup_set_icon(popup, 0, 3, &I_RFIDDolphinReceive_97x61);
+    furi_delay_ms(1800);
+    popup_reset(popup);
     view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewTagAction);
 }
 
@@ -332,13 +378,24 @@ void uhf_reader_new_kp_updated(void* context) {
     M100ResponseType ret =
         m100_write_kill_pwd_only(App->YRM100XWorker->module, current_ap, App->NewKpBuffer);
     notification_message(App->Notifications, &uhf_sequence_blink_stop);
+
     popup_reset(popup);
+    const char* kp_result;
     if(ret == M100SuccessResponse) {
         App->YRM100XWorker->DefaultKP = bytes_to_uint32(App->NewKpBuffer, 4);
+        kp_result = "KP Updated!";
         notification_message(App->Notifications, &sequence_success);
+    } else if(ret == M100APWrong) {
+        kp_result = "Wrong AP!";
+        notification_message(App->Notifications, &sequence_error);
     } else {
+        kp_result = "Update Failed!\nNo Tag Found";
         notification_message(App->Notifications, &sequence_error);
     }
+    popup_set_header(popup, kp_result, 64, 32, AlignCenter, AlignCenter);
+    popup_set_icon(popup, 0, 3, &I_RFIDDolphinReceive_97x61);
+    furi_delay_ms(1800);
+    popup_reset(popup);
     view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewTagAction);
 }
 
