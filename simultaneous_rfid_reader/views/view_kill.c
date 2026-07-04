@@ -220,105 +220,6 @@ void uhf_kill_tag_worker_callback(UHFWorkerEvent event, void* context) {
  * @details    This function handles the kill password that is set from the kill screen
  * @param      context The UHFReaderApp app - used to allocate app variables and views.
 */
-void uhf_reader_kill_password_updated(void* context) {
-    UHFReaderApp* App = (UHFReaderApp*)context;
-    bool Redraw = true;
-    // Temporary buffer to hold the converted string
-    char* tempBuffer = (char*)malloc(12);
-
-    snprintf(tempBuffer, 12, "%s", convert_to_hex_string(App->KillPwdTempBuffer, 4));
-
-    //Changing the read screen's power value to the one set in the configuration menu
-    if(App->UHFModuleType != YRM100X_MODULE) {
-        //TODO: ADD SUPPORT FOR M6E and M7E
-
-        with_view_model(
-            App->ViewWrite,
-            UHFReaderWriteModel * Model,
-            {
-                //Send the power command to the RPi Zero
-                uart_helper_send(App->UartHelper, "SETKILLPWD\n", 11);
-
-                //Set the current power determined by user
-                furi_string_set(Model->SettingKillPwd, tempBuffer);
-
-                //Send the power value to the RPi Zero
-                uart_helper_send_string(App->UartHelper, Model->SettingKillPwd);
-            },
-            Redraw);
-
-    } else {
-        with_view_model(
-            App->ViewWrite,
-            UHFReaderWriteModel * Model,
-            {
-                //Set the current power determined by user
-                furi_string_set(Model->SettingKillPwd, tempBuffer);
-
-                if(App->ReaderConnected) {
-                    uhf_reader_fetch_selected_tag(App);
-                    memset(App->ResBytes, 0, 8 * sizeof(uint8_t));
-                    memset(App->PcBytes, 0, 2 * sizeof(uint16_t));
-                    memset(App->CrcBytes, 0, 2 * sizeof(uint16_t));
-
-                    // Resetting the size_t variables to zero
-                    App->ResBytesLen = 0;
-                    App->PcBytesLen = 0;
-                    App->CrcBytesLen = 0;
-                    //uint16_t PcBytes[4];
-                    //size_t PcBytesLen;
-                    // uint16_t CrcBytes[4];
-                    //size_t CrcBytesLen;
-                    //uint8_t ResBytes
-                    //  [4]; //Technically can be up to 96 bits in length for epc gen 2. We only care about the first 8....
-                    //size_t ResBytesLen;
-
-                    //uhf_reader_fetch_selected_tag(App);
-                    UHFTag* TempTag = App->YRM100XWorker->NewTag;
-
-                    uhf_tag_reset(TempTag);
-
-                    hex_string_to_uint16(
-                        furi_string_get_cstr(Model->Pc), App->PcBytes, &App->PcBytesLen);
-                    hex_string_to_uint16(
-                        furi_string_get_cstr(Model->Crc), App->CrcBytes, &App->CrcBytesLen);
-
-                    uint16_t combinedPc = 0;
-                    uint16_t combinedCrc = 0;
-
-                    for(size_t i = 0; i < 4; i++) {
-                        combinedPc |= App->PcBytes[i];
-                    }
-
-                    for(size_t i = 0; i < 4; i++) {
-                        combinedCrc |= App->CrcBytes[i];
-                    }
-                    hex_string_to_bytes(tempBuffer, App->ResBytes, &App->ResBytesLen);
-                    uhf_tag_set_kill_pwd(TempTag, App->KillPwdTempBuffer, 4);
-                    uhf_tag_set_epc_pc(TempTag, combinedPc);
-                    uhf_tag_set_epc_crc(TempTag, combinedCrc);
-                    m100_enable_write_mask(App->YRM100XWorker->module, WRITE_RFU);
-                    App->YRM100XWorker->KillPwd = true;
-
-                    //Target the specific scanned tag (live) or single-poll (saved).
-                    uhf_reader_prepare_write_target(App);
-                    uhf_worker_start(
-                        App->YRM100XWorker,
-                        UHFWorkerStateWriteSingle,
-                        uhf_kill_tag_worker_callback,
-                        App);
-                    notification_message(App->Notifications, &uhf_sequence_blink_start_cyan);
-                }
-            },
-            Redraw);
-    }
-    Popup* PopupLock = App->LockPopup;
-    popup_set_header(PopupLock, "Setting\nKill\nPassword", 68, 30, AlignLeft, AlignTop);
-    popup_set_icon(PopupLock, 0, 3, &I_RFIDDolphinReceive_97x61);
-
-    free(tempBuffer);
-    view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewLockPopup);
-}
 
 /**
  * @brief      Handles the kill confirm menu.
@@ -436,25 +337,8 @@ void uhf_reader_submenu_kill_callback(void* context, uint32_t index) {
     UHFReaderApp* App = (UHFReaderApp*)context;
 
     switch(index) {
-    //Case for setting the kill password
-    case UHFReaderSubmenuIndexSetKillPwd:
-        //Using a byte input type
-        byte_input_set_header_text(App->KillInput, App->KillPasswordPlaceHolder);
-        byte_input_set_result_callback(
-            App->KillInput,
-            uhf_reader_kill_password_updated,
-            NULL,
-            App,
-            App->KillPwdTempBuffer,
-            App->KillPwdInputBufferSize);
-        view_set_previous_callback(
-            byte_input_get_view(App->KillInput), uhf_reader_navigation_kill_callback);
-        view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewSetKillPwd);
-        break;
-
-    //Case for the kill tag action
+    //Case for the kill tag action — prompts the user to enter the kill password
     case UHFReaderSubmenuIndexKillTag:
-
         byte_input_set_header_text(App->KillConfirmInput, App->KillConfirmPasswordPlaceHolder);
         byte_input_set_result_callback(
             App->KillConfirmInput,
@@ -462,7 +346,7 @@ void uhf_reader_submenu_kill_callback(void* context, uint32_t index) {
             NULL,
             App,
             App->KillConfirmPwdTempBuffer,
-            App->KillPwdInputBufferSize);
+            4);
         view_set_previous_callback(
             byte_input_get_view(App->KillConfirmInput), uhf_reader_navigation_kill_callback);
         view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewKillConfirm);
@@ -481,19 +365,6 @@ void uhf_reader_submenu_kill_callback(void* context, uint32_t index) {
 uint32_t uhf_reader_navigation_kill_exit_callback(void* context) {
     UNUSED(context);
     return UHFReaderViewTagAction;
-}
-
-/**
- * @brief      Allocates kill input view 
- * @details    This function allocates the kill byte input view 
- * @param      context  The context - The App
-*/
-void kill_menu_alloc(UHFReaderApp* App) {
-    App->KillInput = byte_input_alloc();
-    view_dispatcher_add_view(
-        App->ViewDispatcher, UHFReaderViewSetKillPwd, byte_input_get_view(App->KillInput));
-    App->KillPwdInputBufferSize = 4;
-    App->KillPwdTempBuffer = (uint8_t*)malloc(App->KillPwdInputBufferSize);
 }
 
 /**
@@ -523,15 +394,8 @@ void view_kill_alloc(UHFReaderApp* App) {
     App->KillConfirmPasswordPlaceHolder = strdup("Confirm Kill Password!");
     App->DefaultKillPassword = strdup("00000000");
 
-    //Allocate the kill input views
-    kill_menu_alloc(App);
+    //Allocate the kill confirm input view
     kill_confirm_menu_alloc(App);
-    submenu_add_item(
-        App->SubmenuKillActions,
-        "Set Kill Password",
-        UHFReaderSubmenuIndexSetKillPwd,
-        uhf_reader_submenu_kill_callback,
-        App);
     submenu_add_item(
         App->SubmenuKillActions,
         "Kill Tag (Permanent)",
@@ -550,9 +414,6 @@ void view_kill_alloc(UHFReaderApp* App) {
  * @param      context  The context - UHFReaderApp object.
 */
 void view_kill_free(UHFReaderApp* App) {
-    view_dispatcher_remove_view(App->ViewDispatcher, UHFReaderViewSetKillPwd);
-    byte_input_free(App->KillInput);
-    free(App->KillPwdTempBuffer);
     view_dispatcher_remove_view(App->ViewDispatcher, UHFReaderViewKillConfirm);
     byte_input_free(App->KillConfirmInput);
     free(App->KillConfirmPwdTempBuffer);

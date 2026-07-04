@@ -116,6 +116,8 @@ static UHFReaderApp* uhf_reader_app_alloc() {
     view_delete_alloc(App);
     view_delete_success_alloc(App);
     view_about_alloc(App);
+    view_clone_banks_alloc(App);
+    view_clone_alloc(App);
     App->Notifications = furi_record_open(RECORD_NOTIFICATION);
 
 #ifdef BACKLIGHT_ON
@@ -182,6 +184,8 @@ static void uhf_reader_app_free(UHFReaderApp* App) {
     view_tag_actions_free(App);
     view_lock_free(App);
     view_kill_free(App);
+    view_clone_free(App);
+    view_clone_banks_free(App);
 
     //Freeing the main menu view
     view_dispatcher_remove_view(App->ViewDispatcher, UHFReaderViewSubmenu);

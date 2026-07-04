@@ -256,6 +256,13 @@ bool uhf_reader_view_write_custom_event_callback(uint32_t event, void* context) 
             App->ViewWrite,
             UHFReaderWriteModel * Model,
             {
+                // If the Reserved bank was written, update the in-memory passwords so
+                // subsequent reads/writes use the new credentials immediately.
+                if(furi_string_equal(Model->WriteFunction, WRITE_RES_MEM)) {
+                    // ResBytes layout: [0..3] = kill pwd, [4..7] = access pwd
+                    App->YRM100XWorker->DefaultKP = bytes_to_uint32(App->ResBytes, 4);
+                    App->YRM100XWorker->DefaultAP = bytes_to_uint32(App->ResBytes + 4, 4);
+                }
                 furi_string_set(Model->WriteFunction, WRITE_EPC_OK);
                 Model->IsWriting = false;
             },
@@ -334,6 +341,8 @@ bool uhf_reader_view_write_custom_event_callback(uint32_t event, void* context) 
                     //Set true if the requested EPC write is rejected as invalid
                     //(empty, misaligned, or over 96 bits) so we never brick the tag.
                     bool epc_write_invalid = false;
+                    //Set true if the Reserved entry is not exactly 16 hex chars (8 bytes).
+                    bool res_write_invalid = false;
 
                     // Resetting the dynamically allocated arrays to zero
                     uhf_reader_fetch_selected_tag(App);
@@ -413,6 +422,15 @@ bool uhf_reader_view_write_custom_event_callback(uint32_t event, void* context) 
 
                     if(furi_string_equal(Model->WriteFunction, WRITE_USR_MEM) &&
                        Model->NewEpcValue != NULL) {
+                        //User bank is word-organised (16-bit words). Right-pad with trailing
+                        //zeros to the next word boundary so partial entries write cleanly
+                        //(e.g. "ABCDE" -> "ABCDE0").
+                        size_t usr_rem = furi_string_size(Model->NewEpcValue) % 4;
+                        if(usr_rem != 0) {
+                            for(size_t i = 0; i < (4 - usr_rem); i++) {
+                                furi_string_push_back(Model->NewEpcValue, '0');
+                            }
+                        }
                         hex_string_to_bytes(
                             furi_string_get_cstr(Model->NewEpcValue), App->UserBytes, &App->UserBytesLen);
                         uhf_tag_set_user(
@@ -427,6 +445,14 @@ bool uhf_reader_view_write_custom_event_callback(uint32_t event, void* context) 
                     }
                     if(furi_string_equal(Model->WriteFunction, WRITE_TID_MEM) &&
                        Model->NewEpcValue != NULL) {
+                        //TID bank is word-organised (16-bit words). Right-pad with trailing
+                        //zeros to the next word boundary.
+                        size_t tid_rem = furi_string_size(Model->NewEpcValue) % 4;
+                        if(tid_rem != 0) {
+                            for(size_t i = 0; i < (4 - tid_rem); i++) {
+                                furi_string_push_back(Model->NewEpcValue, '0');
+                            }
+                        }
                         hex_string_to_bytes(
                             furi_string_get_cstr(Model->NewEpcValue), App->TidBytes, &App->TidBytesLen);
                         uhf_tag_set_tid(
@@ -440,17 +466,21 @@ bool uhf_reader_view_write_custom_event_callback(uint32_t event, void* context) 
                     }
                     if(furi_string_equal(Model->WriteFunction, WRITE_RES_MEM) &&
                        Model->NewEpcValue != NULL) {
-                        hex_string_to_bytes(
-                            furi_string_get_cstr(Model->NewEpcValue), App->ResBytes, &App->ResBytesLen);
-                        uhf_tag_set_kill_pwd(App->YRM100XWorker->NewTag, App->ResBytes, App->ResBytesLen);
-                        uhf_tag_set_access_pwd(App->YRM100XWorker->NewTag, App->ResBytes, App->ResBytesLen);
-                        
-                        m100_enable_write_mask(App->YRM100XWorker->module, WRITE_RFU);
+                        //Reserved bank is exactly kill pwd (words 0-1) + access pwd (words 2-3)
+                        //= 8 bytes = 16 hex chars. Reject any other length — a partial write
+                        //would corrupt the tag's access control irreversibly.
+                        if(furi_string_size(Model->NewEpcValue) != 16) {
+                            res_write_invalid = true;
+                        } else {
+                            hex_string_to_bytes(
+                                furi_string_get_cstr(Model->NewEpcValue), App->ResBytes, &App->ResBytesLen);
+                            uhf_tag_set_kill_pwd(App->YRM100XWorker->NewTag, App->ResBytes, App->ResBytesLen);
+                            uhf_tag_set_access_pwd(App->YRM100XWorker->NewTag, App->ResBytes, App->ResBytesLen);
+                            m100_enable_write_mask(App->YRM100XWorker->module, WRITE_RFU);
+                        }
                     } else {
                         hex_string_to_bytes(
                             furi_string_get_cstr(Model->ResValue), App->ResBytes, &App->ResBytesLen);
-
-                        
                     }
                     
 
@@ -468,7 +498,13 @@ bool uhf_reader_view_write_custom_event_callback(uint32_t event, void* context) 
                         m100_disable_write_mask(App->YRM100XWorker->module, WRITE_EPC);
                         App->IsWriting = false;
                         Model->IsWriting = false;
-                        furi_string_set_str(Model->WriteStatus, "Invalid EPC length");
+                        furi_string_set_str(Model->WriteFunction, "Invalid EPC length");
+                        notification_message(App->Notifications, &sequence_error);
+                    } else if(res_write_invalid) {
+                        //Reserved must be exactly 16 hex chars (kill pwd + access pwd).
+                        App->IsWriting = false;
+                        Model->IsWriting = false;
+                        furi_string_set_str(Model->WriteFunction, "Reserved must be 16 hex");
                         notification_message(App->Notifications, &sequence_error);
                     } else {
                         App->IsWriting = true;
@@ -521,13 +557,23 @@ void uhf_reader_view_write_draw_callback(Canvas* canvas, void* model) {
     canvas_draw_str_aligned(
         canvas, 64, 26, AlignCenter, AlignBottom, MyModel->IsUpdateMode ? "Update" : "Write");
     canvas_set_font(canvas, FontSecondary);
-    canvas_draw_str_aligned(
-        canvas,
-        64,
-        38,
-        AlignCenter,
-        AlignBottom,
-        MyModel->BankChosen ? furi_string_get_cstr(MyModel->WriteFunction) : "Pick a bank");
+    if(MyModel->BankChosen) {
+        canvas_draw_str_aligned(
+            canvas,
+            64,
+            38,
+            AlignCenter,
+            AlignBottom,
+            furi_string_get_cstr(MyModel->WriteFunction));
+    } else {
+        //Live/Update mode targets the specific scanned tag, so the "1st detected
+        //tag" wording only applies to the saved (single-poll) write flow.
+        if(!MyModel->IsUpdateMode) {
+            canvas_draw_str_aligned(
+                canvas, 64, 36, AlignCenter, AlignBottom, "Write to the 1st detected tag");
+        }
+        canvas_draw_str_aligned(canvas, 64, 45, AlignCenter, AlignBottom, "Pick a memory bank");
+    }
 
     //Display the action button only once a bank has been chosen (Cancel while writing).
     if(MyModel->IsWriting) {

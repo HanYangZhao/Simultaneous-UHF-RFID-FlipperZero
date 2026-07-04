@@ -30,6 +30,8 @@ static bool cmd_can_return_error_frame(uint8_t command) {
     case 0x27: // multiple poll
     case 0x39: // read tag memory
     case 0x49: // write tag memory
+    case 0x82: // lock tag
+    case 0x65: // kill tag
         return true;
     default:
         return false;
@@ -708,12 +710,18 @@ M100ResponseType m100_lock_label_data(
 
     //Need to add a check here for an incorrect password. Look for an error code of some sort
     if(rtn_command == 0xFF) {
-        if(payload_len == 0x01)
-            return M100NoTagResponse;
-
-        else if(data[2] == 0xFF && (payload_len == 16 && data[5] == 0x16))
+        if(payload_len == 0x01 && data[5] == 0x13)
+            return M100NoTagResponse;       // PL=1: no EPC, tag not found
+        else if(data[5] == 0x13)
+            return M100ValidationFail;      // PL>1: found tag but Lock cmd got no RF response
+        else if(data[5] == 0x16)
             return M100APWrong;
-
+        else if((data[5] & 0xF0) == 0xC0) { // 0xC0|err = EPC Gen2 lock error
+            uint8_t gen2_err = data[5] & 0x0F;
+            if(gen2_err == 0x04)
+                return M100MemoryLocked;    // 0xC4: memory area is permanently locked
+            return M100MemoryOverrun;       // 0xC3: memory overrun, or other Gen2 error
+        }
         return M100MemoryOverrun;
     }
 
@@ -750,9 +758,9 @@ M100ResponseType m100_kill_tag(M100Module* module, uint32_t kill_pwd) {
     payload_len = (payload_len << 8) + data[4];
 
     if(rtn_command == 0xFF) {
-        if(payload_len == 0x01)
+        if(payload_len == 0x01 || data[5] == 0x12)
             return M100NoTagResponse;
-        else if(data[2] == 0xFF && (payload_len == 16 && data[5] == 0x12))
+        else if(data[5] == 0x16)
             return M100APWrong;
         return M100MemoryOverrun;
     }
@@ -852,6 +860,60 @@ M100ResponseType m100_write_label_data_storage(
     else if(buff_data[2] == 0xFF)
         return M100ValidationFail;
     return M100SuccessResponse;
+}
+
+// Shared helper: write 2 words (4 bytes) to Reserved bank at given source address.
+static M100ResponseType m100_write_reserved_words(
+    M100Module* module,
+    uint32_t current_ap,
+    uint16_t sa,
+    uint8_t* data) {
+    uint8_t cmd[MAX_BUFFER_SIZE];
+    size_t cmd_length = CMD_WRITE_LABEL_DATA_STORE.length;
+    memcpy(cmd, CMD_WRITE_LABEL_DATA_STORE.cmd, cmd_length);
+    uint16_t payload_len = 9 + 4; // 9-byte base + 4 data bytes
+    cmd[3] = (payload_len >> 8) & 0xFF;
+    cmd[4] = payload_len & 0xFF;
+    cmd[5] = (current_ap >> 24) & 0xFF;
+    cmd[6] = (current_ap >> 16) & 0xFF;
+    cmd[7] = (current_ap >> 8) & 0xFF;
+    cmd[8] = current_ap & 0xFF;
+    cmd[9] = 0x00; // Reserved bank
+    cmd[10] = (sa >> 8) & 0xFF;
+    cmd[11] = sa & 0xFF;
+    cmd[12] = 0x00; // DL high
+    cmd[13] = 0x02; // DL = 2 words
+    memcpy(cmd + 14, data, 4);
+    cmd_length = 7 + payload_len;
+    cmd[cmd_length - 2] = checksum(cmd + 1, cmd_length - 3);
+    cmd[cmd_length - 1] = FRAME_END;
+    M100ResponseType rp_type = setup_and_send_rx(module, cmd, cmd_length);
+    if(rp_type != M100SuccessResponse) return rp_type;
+    uint8_t* buff_data = uhf_buffer_get_data(module->uart->buffer);
+    size_t buff_length = uhf_buffer_get_size(module->uart->buffer);
+    if(buff_data[2] == 0xFF && buff_length == 8)
+        return M100NoTagResponse;
+    else if(buff_data[2] == 0xFF && (buff_length == 23 || buff_data[5] == 0x16))
+        return M100APWrong;
+    else if(buff_data[2] == 0xFF)
+        return M100ValidationFail;
+    return M100SuccessResponse;
+}
+
+// Write new access password (words 2-3 of Reserved bank, SA=2, DL=2).
+M100ResponseType m100_write_access_pwd(
+    M100Module* module,
+    uint32_t current_ap,
+    uint8_t* new_ap) {
+    return m100_write_reserved_words(module, current_ap, 2, new_ap);
+}
+
+// Write new kill password (words 0-1 of Reserved bank, SA=0, DL=2).
+M100ResponseType m100_write_kill_pwd_only(
+    M100Module* module,
+    uint32_t current_ap,
+    uint8_t* new_kp) {
+    return m100_write_reserved_words(module, current_ap, 0, new_kp);
 }
 
 void m100_set_baudrate(M100Module* module, uint32_t baudrate) {
