@@ -253,14 +253,54 @@ void uhf_reader_submenu_tag_info_callback(void* context, uint32_t index) {
         view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewWrite);
         break;
     case UHFReaderSubmenuIndexTagLock:
+        if(App->ActionContext != ActionFromLive) {
+            notification_message(App->Notifications, &sequence_error);
+            break;
+        }
         view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewLock);
         break;
     case UHFReaderSubmenuIndexTagKill:
+        if(App->ActionContext != ActionFromLive) {
+            notification_message(App->Notifications, &sequence_error);
+            break;
+        }
         view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewKill);
         break;
     //Handles the delete screen
     case UHFReaderSubmenuIndexTagDelete:
         view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewDelete);
+        break;
+    case UHFReaderSubmenuIndexTagClone:
+        //Initialise the clone bank-selection view (deep-copy source tag +
+        //reset item states) with the real App context, then switch. The
+        //VariableItemList view's own context is the list module, so we cannot
+        //rely on a view enter callback receiving App here.
+        view_clone_banks_enter_callback(App);
+        view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewCloneBanks);
+        break;
+    case UHFReaderSubmenuIndexUpdateAP:
+        if(App->ActionContext != ActionFromLive) {
+            notification_message(App->Notifications, &sequence_error);
+            break;
+        }
+        byte_input_set_header_text(App->CurrentApInput, "Current Access Pwd");
+        byte_input_set_result_callback(
+            App->CurrentApInput, uhf_reader_current_ap_updated, NULL, App, App->CurrentApBuffer, 4);
+        view_set_previous_callback(
+            byte_input_get_view(App->CurrentApInput), uhf_reader_navigation_lock_exit_callback);
+        view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewCurrentApInput);
+        break;
+    case UHFReaderSubmenuIndexUpdateKP:
+        if(App->ActionContext != ActionFromLive) {
+            notification_message(App->Notifications, &sequence_error);
+            break;
+        }
+        byte_input_set_header_text(App->CurrentKpInput, "Current Kill Pwd");
+        byte_input_set_result_callback(
+            App->CurrentKpInput, uhf_reader_current_kp_updated, NULL, App, App->CurrentKpBuffer, 4);
+        view_set_previous_callback(
+            byte_input_get_view(App->CurrentKpInput), uhf_reader_navigation_lock_exit_callback);
+        view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewCurrentKpInput);
         break;
     default:
         break;
@@ -316,6 +356,24 @@ void uhf_reader_build_tag_action_menu(UHFReaderApp* App) {
             UHFReaderSubmenuIndexTagKill,
             uhf_reader_submenu_tag_info_callback,
             App);
+        submenu_add_item(
+            App->SubmenuTagActions,
+            "Clone",
+            UHFReaderSubmenuIndexTagClone,
+            uhf_reader_submenu_tag_info_callback,
+            App);
+        submenu_add_item(
+            App->SubmenuTagActions,
+            "Update AP",
+            UHFReaderSubmenuIndexUpdateAP,
+            uhf_reader_submenu_tag_info_callback,
+            App);
+        submenu_add_item(
+            App->SubmenuTagActions,
+            "Update KP",
+            UHFReaderSubmenuIndexUpdateKP,
+            uhf_reader_submenu_tag_info_callback,
+            App);
     } else {
         //Saved tag: full menu.
         submenu_add_item(
@@ -338,20 +396,14 @@ void uhf_reader_build_tag_action_menu(UHFReaderApp* App) {
             App);
         submenu_add_item(
             App->SubmenuTagActions,
-            "Lock",
-            UHFReaderSubmenuIndexTagLock,
-            uhf_reader_submenu_tag_info_callback,
-            App);
-        submenu_add_item(
-            App->SubmenuTagActions,
-            "Kill",
-            UHFReaderSubmenuIndexTagKill,
-            uhf_reader_submenu_tag_info_callback,
-            App);
-        submenu_add_item(
-            App->SubmenuTagActions,
             "Delete",
             UHFReaderSubmenuIndexTagDelete,
+            uhf_reader_submenu_tag_info_callback,
+            App);
+        submenu_add_item(
+            App->SubmenuTagActions,
+            "Clone",
+            UHFReaderSubmenuIndexTagClone,
             uhf_reader_submenu_tag_info_callback,
             App);
     }

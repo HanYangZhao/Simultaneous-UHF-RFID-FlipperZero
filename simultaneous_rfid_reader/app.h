@@ -54,6 +54,8 @@
 #include "views/view_tag_actions.h"
 #include "views/view_lock.h"
 #include "views/view_kill.h"
+#include "views/view_clone_banks.h"
+#include "views/view_clone.h"
 #include "helpers/extract_tag_info.h"
 #include "helpers/uart_process.h"
 #include "helpers/saved_epc_functions.h"

@@ -53,6 +53,9 @@ typedef enum {
     UHFReaderSubmenuIndexSetPower,
     UHFReaderSubmenuIndexTagAction,
     UHFReaderSubmenuIndexSetAccessPwd,
+    UHFReaderSubmenuIndexTagClone,
+    UHFReaderSubmenuIndexUpdateAP,
+    UHFReaderSubmenuIndexUpdateKP,
 } UHFReaderSubmenuIndex;
 
 //Defining views for the application
@@ -81,6 +84,12 @@ typedef enum {
     UHFReaderViewSetAccessPwd,
     UHFReaderViewKillConfirm,
     UHFReaderViewLockPopup,
+    UHFReaderViewCloneBanks,
+    UHFReaderViewClone,
+    UHFReaderViewCurrentApInput,
+    UHFReaderViewNewApInput,
+    UHFReaderViewCurrentKpInput,
+    UHFReaderViewNewKpInput,
 } UHFReaderView;
 
 //Event IDs for the app
@@ -95,6 +104,11 @@ typedef enum {
     UHFCustomEventDeepReadAborted = 109,
     UHFCustomEventSingleReadDone = 110,
     UHFCustomEventSingleReadAborted = 111,
+    UHFCustomEventCloneScanDone = 112,
+    UHFCustomEventCloneWriteDone = 113,
+    UHFCustomEventCloneWriteFail = 114,
+    UHFCustomEventCloneAccessDenied = 115,
+    UHFCustomEventCloneScanTimeout = 116,
 } UHFReaderEventId;
 
 //State of the reader app when communicating with raspberry pi zero over uart
@@ -157,6 +171,10 @@ typedef struct {
     ByteInput* KillInput;
     ByteInput* SetApInput;
     ByteInput* KillConfirmInput;
+    ByteInput* CurrentApInput;
+    ByteInput* NewApInput;
+    ByteInput* CurrentKpInput;
+    ByteInput* NewKpInput;
 
     TextInput* SaveInput;
     TextInput* RenameInput;
@@ -188,6 +206,15 @@ typedef struct {
     View* ViewEpc;
     View* ViewEpcInfo;
     View* ViewBankMem;
+    View* ViewClone;
+    VariableItemList* VariableItemListClone;
+    VariableItem* CloneEpcItem;
+    VariableItem* CloneTidItem;
+    VariableItem* CloneUserItem;
+    VariableItem* CloneResItem;
+    VariableItem* CloneStartItem;
+    UHFTag* CloneSourceTag;
+    uint16_t CloneMask;
 
     // Source view model + return view for the shared Up-key save flow
     View* SaveSourceView;
@@ -198,6 +225,10 @@ typedef struct {
     uint8_t* KillPwdTempBuffer;
     uint8_t* KillConfirmPwdTempBuffer;
     uint8_t* SetPwdTempBuffer;
+    uint8_t* CurrentApBuffer;
+    uint8_t* NewApBuffer;
+    uint8_t* CurrentKpBuffer;
+    uint8_t* NewKpBuffer;
     char* TempSaveBuffer;
     char* FileName;
     char* EpcToSave;
@@ -438,3 +469,22 @@ typedef struct {
     bool UserBankRead;
     bool ResBankRead;
 } UHFRFIDTagModel;
+
+// Phase of the clone scan/write screen
+typedef enum {
+    ClonePhaseScanning,
+    ClonePhaseConfirm,
+    ClonePhaseWriting,
+    ClonePhaseSuccess,
+    ClonePhaseFailed,
+    ClonePhaseAccessDenied,
+    ClonePhaseTimeout,
+} ClonePhase;
+
+// View model for the clone scan/write screen
+typedef struct {
+    ClonePhase phase;
+    char target_epc_str[65]; // hex string of found target tag EPC (up to 32B = 64 hex chars + NUL)
+    uint16_t clone_mask;     // which banks are being written (copy of App->CloneMask)
+    uint8_t clone_count;     // number of successful clones this session
+} UHFReaderCloneModel;

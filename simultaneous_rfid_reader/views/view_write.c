@@ -256,6 +256,13 @@ bool uhf_reader_view_write_custom_event_callback(uint32_t event, void* context) 
             App->ViewWrite,
             UHFReaderWriteModel * Model,
             {
+                // If the Reserved bank was written, update the in-memory passwords so
+                // subsequent reads/writes use the new credentials immediately.
+                if(furi_string_equal(Model->WriteFunction, WRITE_RES_MEM)) {
+                    // ResBytes layout: [0..3] = kill pwd, [4..7] = access pwd
+                    App->YRM100XWorker->DefaultKP = bytes_to_uint32(App->ResBytes, 4);
+                    App->YRM100XWorker->DefaultAP = bytes_to_uint32(App->ResBytes + 4, 4);
+                }
                 furi_string_set(Model->WriteFunction, WRITE_EPC_OK);
                 Model->IsWriting = false;
             },
@@ -491,13 +498,13 @@ bool uhf_reader_view_write_custom_event_callback(uint32_t event, void* context) 
                         m100_disable_write_mask(App->YRM100XWorker->module, WRITE_EPC);
                         App->IsWriting = false;
                         Model->IsWriting = false;
-                        furi_string_set_str(Model->WriteStatus, "Invalid EPC length");
+                        furi_string_set_str(Model->WriteFunction, "Invalid EPC length");
                         notification_message(App->Notifications, &sequence_error);
                     } else if(res_write_invalid) {
                         //Reserved must be exactly 16 hex chars (kill pwd + access pwd).
                         App->IsWriting = false;
                         Model->IsWriting = false;
-                        furi_string_set_str(Model->WriteStatus, "Reserved must be 16 hex chars");
+                        furi_string_set_str(Model->WriteFunction, "Reserved must be 16 hex");
                         notification_message(App->Notifications, &sequence_error);
                     } else {
                         App->IsWriting = true;

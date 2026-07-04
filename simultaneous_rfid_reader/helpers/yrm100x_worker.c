@@ -480,6 +480,138 @@ static UHFWorkerEvent detect_multiple_cards(UHFWorker* uhf_worker) {
     return UHFWorkerEventNoTagDetected;
 }
 
+// Clone phase 1: poll for the first tag in field, giving up after 10 seconds.
+// Stores the found tag in uhf_tag_wrapper->uhf_tag and fires CardDetected.
+// Returns NoTagDetected on timeout, or Aborted if the user pressed Back.
+static UHFWorkerEvent clone_scan_card(UHFWorker* uhf_worker) {
+    UHFTag* uhf_tag = uhf_tag_alloc();
+    M100ResponseType status;
+    const uint32_t timeout_ticks = furi_ms_to_ticks(10000);
+    const uint32_t start_tick = furi_get_tick();
+    do {
+        if(uhf_worker->state == UHFWorkerStateStop) {
+            uhf_tag_free(uhf_tag);
+            return UHFWorkerEventAborted;
+        }
+        if((furi_get_tick() - start_tick) >= timeout_ticks) {
+            FURI_LOG_I(UHF_WK_TAG, "Clone scan timed out (no tag in 10s)");
+            uhf_tag_free(uhf_tag);
+            return UHFWorkerEventNoTagDetected;
+        }
+        status = m100_single_poll(uhf_worker->module, uhf_tag);
+    } while(status != M100SuccessResponse);
+    uhf_tag_wrapper_set_tag(uhf_worker->uhf_tag_wrapper, uhf_tag);
+    return UHFWorkerEventCardDetected;
+}
+
+// Clone phase 2: write selected banks from NewTag onto the first tag in field.
+// Uses uhf_worker->CloneMask to determine which banks to write.
+// Returns Success, Aborted, or AccessDenied (M100APWrong).
+static UHFWorkerEvent clone_write_card(UHFWorker* uhf_worker) {
+    // Poll for the target tag (first responder in field)
+    UHFTag* target = send_polling_command(uhf_worker);
+    if(target == NULL) return UHFWorkerEventAborted;
+
+    UHFTag* source = uhf_worker->NewTag;
+    uint16_t mask = uhf_worker->CloneMask;
+    M100ResponseType status;
+
+    // Select the target tag
+    do {
+        if(uhf_worker->state == UHFWorkerStateStop) {
+            uhf_tag_free(target);
+            return UHFWorkerEventAborted;
+        }
+        status = m100_set_select(uhf_worker->module, target);
+    } while(status != M100SuccessResponse);
+
+    // Write User bank
+    if(mask & WRITE_USER) {
+        if(source->user->size > 0) {
+            while(true) {
+                if(uhf_worker->state == UHFWorkerStateStop) {
+                    uhf_tag_free(target);
+                    return UHFWorkerEventAborted;
+                }
+                status = m100_write_label_data_storage(
+                    uhf_worker->module, source, target, UserBank, 0, uhf_worker->DefaultAP);
+                if(status == M100APWrong) {
+                    uhf_tag_free(target);
+                    return UHFWorkerEventAccessDenied;
+                }
+                if(status == M100SuccessResponse) break;
+            }
+        }
+    }
+
+    // Write TID bank
+    if(mask & WRITE_TID) {
+        if(source->tid->size > 0) {
+            while(true) {
+                if(uhf_worker->state == UHFWorkerStateStop) {
+                    uhf_tag_free(target);
+                    return UHFWorkerEventAborted;
+                }
+                status = m100_write_label_data_storage(
+                    uhf_worker->module, source, target, TIDBank, 0, uhf_worker->DefaultAP);
+                if(status == M100APWrong) {
+                    uhf_tag_free(target);
+                    return UHFWorkerEventAccessDenied;
+                }
+                if(status == M100SuccessResponse) break;
+            }
+        }
+    }
+
+    // Write EPC bank — adjust PC word count to match new EPC length
+    if(mask & WRITE_EPC) {
+        if(source->epc->size > 0) {
+            uint16_t base_pc = uhf_tag_get_epc_pc(target);
+            uint16_t new_words = (uint16_t)(uhf_tag_get_epc_size(source) / 2);
+            if(new_words > 0) {
+                uint16_t new_pc = (base_pc & 0x07FF) | ((new_words & 0x1F) << 11);
+                uhf_tag_set_epc_pc(source, new_pc);
+                while(true) {
+                    if(uhf_worker->state == UHFWorkerStateStop) {
+                        uhf_tag_free(target);
+                        return UHFWorkerEventAborted;
+                    }
+                    status = m100_write_label_data_storage(
+                        uhf_worker->module, source, target, EPCBank, 0, uhf_worker->DefaultAP);
+                    if(status == M100APWrong) {
+                        uhf_tag_free(target);
+                        return UHFWorkerEventAccessDenied;
+                    }
+                    if(status == M100SuccessResponse) break;
+                }
+            }
+        }
+    }
+
+    // Write Reserved bank (both kill + access passwords, source_address=1)
+    if(mask & WRITE_RFU) {
+        if(source->reserved->size >= 4) {
+            while(true) {
+                if(uhf_worker->state == UHFWorkerStateStop) {
+                    uhf_tag_free(target);
+                    return UHFWorkerEventAborted;
+                }
+                // source_address=1 writes both kill pwd and access pwd (8 bytes total)
+                status = m100_write_label_data_storage(
+                    uhf_worker->module, source, target, ReservedBank, 1, uhf_worker->DefaultAP);
+                if(status == M100APWrong) {
+                    uhf_tag_free(target);
+                    return UHFWorkerEventAccessDenied;
+                }
+                if(status == M100SuccessResponse) break;
+            }
+        }
+    }
+
+    uhf_tag_free(target);
+    return UHFWorkerEventSuccess;
+}
+
 int32_t uhf_worker_task(void* ctx) {
     UHFWorker* uhf_worker = ctx;
     if(uhf_worker->state == UHFWorkerStateVerify) {
@@ -500,6 +632,12 @@ int32_t uhf_worker_task(void* ctx) {
     } else if(uhf_worker->state == UHFWorkerStateWriteSingle) {
         UHFWorkerEvent event = write_single_card(uhf_worker);
         uhf_worker->callback(event, uhf_worker->ctx);
+    } else if(uhf_worker->state == UHFWorkerStateCloneScan) {
+        UHFWorkerEvent event = clone_scan_card(uhf_worker);
+        uhf_worker->callback(event, uhf_worker->ctx);
+    } else if(uhf_worker->state == UHFWorkerStateCloneWrite) {
+        UHFWorkerEvent event = clone_write_card(uhf_worker);
+        uhf_worker->callback(event, uhf_worker->ctx);
     }
     return 0;
 }
@@ -516,7 +654,9 @@ UHFWorker* uhf_worker_alloc() {
     uhf_worker->KillPwd = false;
     uhf_worker->AccessPwd = false;
     uhf_worker->DefaultAP = 0;
+    uhf_worker->DefaultKP = 0;
     uhf_worker->Targeted = false;
+    uhf_worker->CloneMask = 0;
     return uhf_worker;
 }
 

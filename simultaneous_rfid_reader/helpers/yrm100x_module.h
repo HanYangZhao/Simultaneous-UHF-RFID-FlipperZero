@@ -102,6 +102,16 @@ M100ResponseType m100_write_label_data_storage(
     uint16_t source_address,
     uint32_t access_pwd);
 
+M100ResponseType m100_write_access_pwd(
+    M100Module* module,
+    uint32_t current_ap,
+    uint8_t* new_ap);
+
+M100ResponseType m100_write_kill_pwd_only(
+    M100Module* module,
+    uint32_t current_ap,
+    uint8_t* new_kp);
+
 //Written by William Riley Haffner
 M100ResponseType m100_lock_label_data(M100Module* module, BankType bank, uint32_t access_pwd, LockType lockfunction);
 //Written by William Riley Haffner

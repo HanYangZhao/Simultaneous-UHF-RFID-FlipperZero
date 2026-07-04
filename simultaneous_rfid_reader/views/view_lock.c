@@ -52,94 +52,19 @@ void access_password_menu_alloc(UHFReaderApp* App) {
 */
 void uhf_reader_access_password_updated(void* context) {
     UHFReaderApp* App = (UHFReaderApp*)context;
-    bool Redraw = true;
-    // Temporary buffer to hold the converted string
-    char* tempBuffer = (char*)malloc(8);
+    // Convert the 4-byte buffer to a hex string for display.
+    char* tempBuffer = (char*)malloc(9);
+    snprintf(tempBuffer, 9, "%s", convert_to_hex_string(App->SetPwdTempBuffer, 4));
 
-    snprintf(tempBuffer, 8, "%s", convert_to_hex_string(App->SetPwdTempBuffer, 4));
+    // Store the new AP in memory only — no write to tag.
+    // To write the AP to the tag, use the Reserved bank in the Write view.
+    App->YRM100XWorker->DefaultAP = bytes_to_uint32(App->SetPwdTempBuffer, 4);
+    furi_string_set_str(App->DefaultLockAccessPwdStr, tempBuffer);
+    variable_item_set_current_value_text(
+        App->SettingLockApPwdItem, furi_string_get_cstr(App->DefaultLockAccessPwdStr));
 
-    if(App->UHFModuleType != YRM100X_MODULE) {
-        //TODO: ADD SUPPORT FOR M6E and M7E
-        uart_helper_send(App->UartHelper, "SETPWD\n", 7);
-
-    } else {
-        with_view_model(
-            App->ViewWrite,
-            UHFReaderWriteModel * Model,
-            {
-                furi_string_set(Model->ResValue, tempBuffer);
-
-                if(App->ReaderConnected) {
-                    //This is where we should write...
-                    uhf_reader_fetch_selected_tag(App);
-                    memset(App->ResBytes, 0, 8 * sizeof(uint8_t));
-                    memset(App->PcBytes, 0, 2 * sizeof(uint16_t));
-                    memset(App->CrcBytes, 0, 2 * sizeof(uint16_t));
-
-                    // Resetting the size_t variables to zero
-                    App->ResBytesLen = 0;
-                    App->PcBytesLen = 0;
-                    App->CrcBytesLen = 0;
-
-                    UHFTag* TempTag = App->YRM100XWorker->NewTag;
-
-                    uhf_tag_reset(TempTag);
-
-                    hex_string_to_uint16(
-                        furi_string_get_cstr(Model->Pc), App->PcBytes, &App->PcBytesLen);
-                    hex_string_to_uint16(
-                        furi_string_get_cstr(Model->Crc), App->CrcBytes, &App->CrcBytesLen);
-
-                    uint16_t combinedPc = 0;
-                    uint16_t combinedCrc = 0;
-
-                    for(size_t i = 0; i < 4; i++) {
-                        combinedPc |= App->PcBytes[i];
-                    }
-
-                    for(size_t i = 0; i < 4; i++) {
-                        combinedCrc |= App->CrcBytes[i];
-                    }
-
-                    //Set the reserved bank value
-                    bool redraw = true;
-                    with_view_model(
-                        App->ViewWrite,
-                        UHFReaderWriteModel * Model,
-                        {
-                            hex_string_to_bytes(
-                                furi_string_get_cstr(Model->ResValue),
-                                App->ResBytes,
-                                &App->ResBytesLen);
-                            uhf_tag_set_kill_pwd(TempTag, App->ResBytes, 4);
-                        },
-                        redraw);
-
-                    uhf_tag_set_access_pwd(TempTag, App->SetPwdTempBuffer, 4);
-
-                    m100_enable_write_mask(App->YRM100XWorker->module, WRITE_RFU);
-
-                    uhf_tag_set_epc_pc(TempTag, combinedPc);
-                    uhf_tag_set_epc_crc(TempTag, combinedCrc);
-                    App->YRM100XWorker->AccessPwd = true;
-
-                    //Target the specific scanned tag (live) or single-poll (saved).
-                    uhf_reader_prepare_write_target(App);
-                    uhf_worker_start(
-                        App->YRM100XWorker,
-                        UHFWorkerStateWriteSingle,
-                        uhf_access_tag_worker_callback,
-                        App);
-                    notification_message(App->Notifications, &uhf_sequence_blink_start_cyan);
-                }
-            },
-            Redraw);
-    }
-    //Switch to the popup
-    Popup* PopupLock = App->LockPopup;
-    popup_set_header(PopupLock, "Setting\nAccess\nPassword", 68, 30, AlignLeft, AlignTop);
-    popup_set_icon(PopupLock, 0, 3, &I_RFIDDolphinReceive_97x61);
-    view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewLockPopup);
+    free(tempBuffer);
+    view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewLock);
 }
 
 /**
@@ -222,7 +147,7 @@ void uhf_reader_lock_item_clicked(void* context, uint32_t index) {
             NULL,
             App,
             App->SetPwdTempBuffer,
-            App->KillPwdInputBufferSize);
+            4);
         view_set_previous_callback(
             byte_input_get_view(App->SetApInput), uhf_reader_navigation_lock_callback);
         view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewSetAccessPwd);
@@ -310,13 +235,171 @@ void uhf_reader_setting_lock_action_change(VariableItem* Item) {
     variable_item_set_current_value_text(Item, App->SettingLockActionNames[Index]);
 }
 /**
+ * @brief      Navigation callback returning to the current-AP input screen.
+*/
+static uint32_t uhf_reader_navigation_new_ap_callback(void* context) {
+    UNUSED(context);
+    return UHFReaderViewCurrentApInput;
+}
+
+/**
+ * @brief      Navigation callback returning to the current-KP input screen.
+*/
+static uint32_t uhf_reader_navigation_new_kp_callback(void* context) {
+    UNUSED(context);
+    return UHFReaderViewCurrentKpInput;
+}
+
+/**
+ * @brief      Called after the user confirms the current access password.
+ *             Stores the value and shows the "new access password" byte input.
+*/
+void uhf_reader_current_ap_updated(void* context) {
+    UHFReaderApp* App = (UHFReaderApp*)context;
+    byte_input_set_header_text(App->NewApInput, "New Access Pwd");
+    byte_input_set_result_callback(
+        App->NewApInput, uhf_reader_new_ap_updated, NULL, App, App->NewApBuffer, 4);
+    view_set_previous_callback(
+        byte_input_get_view(App->NewApInput), uhf_reader_navigation_new_ap_callback);
+    view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewNewApInput);
+}
+
+/**
+ * @brief      Called after the user confirms the new access password.
+ *             Performs a blocking write to the tag's Reserved bank (SA=2, DL=2).
+*/
+void uhf_reader_new_ap_updated(void* context) {
+    UHFReaderApp* App = (UHFReaderApp*)context;
+    if(!App->ReaderConnected) {
+        notification_message(App->Notifications, &sequence_error);
+        view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewTagAction);
+        return;
+    }
+    Popup* popup = App->LockPopup;
+    popup_reset(popup);
+    popup_set_header(popup, "Updating\nAccess\nPwd...", 68, 30, AlignLeft, AlignTop);
+    popup_set_icon(popup, 0, 3, &I_RFIDDolphinReceive_97x61);
+    notification_message(App->Notifications, &uhf_sequence_blink_start_cyan);
+    view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewLockPopup);
+    uhf_reader_fetch_selected_tag(App);
+    uint32_t current_ap = bytes_to_uint32(App->CurrentApBuffer, 4);
+    M100ResponseType ret =
+        m100_write_access_pwd(App->YRM100XWorker->module, current_ap, App->NewApBuffer);
+    notification_message(App->Notifications, &uhf_sequence_blink_stop);
+    popup_reset(popup);
+    if(ret == M100SuccessResponse) {
+        App->YRM100XWorker->DefaultAP = bytes_to_uint32(App->NewApBuffer, 4);
+        notification_message(App->Notifications, &sequence_success);
+    } else {
+        notification_message(App->Notifications, &sequence_error);
+    }
+    view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewTagAction);
+}
+
+/**
+ * @brief      Called after the user confirms the current kill password.
+ *             Stores the value and shows the "new kill password" byte input.
+*/
+void uhf_reader_current_kp_updated(void* context) {
+    UHFReaderApp* App = (UHFReaderApp*)context;
+    byte_input_set_header_text(App->NewKpInput, "New Kill Pwd");
+    byte_input_set_result_callback(
+        App->NewKpInput, uhf_reader_new_kp_updated, NULL, App, App->NewKpBuffer, 4);
+    view_set_previous_callback(
+        byte_input_get_view(App->NewKpInput), uhf_reader_navigation_new_kp_callback);
+    view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewNewKpInput);
+}
+
+/**
+ * @brief      Called after the user confirms the new kill password.
+ *             Performs a blocking write to the tag's Reserved bank (SA=0, DL=2).
+*/
+void uhf_reader_new_kp_updated(void* context) {
+    UHFReaderApp* App = (UHFReaderApp*)context;
+    if(!App->ReaderConnected) {
+        notification_message(App->Notifications, &sequence_error);
+        view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewTagAction);
+        return;
+    }
+    Popup* popup = App->LockPopup;
+    popup_reset(popup);
+    popup_set_header(popup, "Updating\nKill\nPwd...", 68, 30, AlignLeft, AlignTop);
+    popup_set_icon(popup, 0, 3, &I_RFIDDolphinReceive_97x61);
+    notification_message(App->Notifications, &uhf_sequence_blink_start_cyan);
+    view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewLockPopup);
+    uhf_reader_fetch_selected_tag(App);
+    uint32_t current_ap = bytes_to_uint32(App->CurrentKpBuffer, 4);
+    M100ResponseType ret =
+        m100_write_kill_pwd_only(App->YRM100XWorker->module, current_ap, App->NewKpBuffer);
+    notification_message(App->Notifications, &uhf_sequence_blink_stop);
+    popup_reset(popup);
+    if(ret == M100SuccessResponse) {
+        App->YRM100XWorker->DefaultKP = bytes_to_uint32(App->NewKpBuffer, 4);
+        notification_message(App->Notifications, &sequence_success);
+    } else {
+        notification_message(App->Notifications, &sequence_error);
+    }
+    view_dispatcher_switch_to_view(App->ViewDispatcher, UHFReaderViewTagAction);
+}
+
+/**
+ * @brief      Allocates the four ByteInput views used by Update AP and Update KP.
+*/
+void update_pwd_views_alloc(UHFReaderApp* App) {
+    App->CurrentApInput = byte_input_alloc();
+    view_dispatcher_add_view(
+        App->ViewDispatcher,
+        UHFReaderViewCurrentApInput,
+        byte_input_get_view(App->CurrentApInput));
+    App->CurrentApBuffer = (uint8_t*)malloc(4);
+
+    App->NewApInput = byte_input_alloc();
+    view_dispatcher_add_view(
+        App->ViewDispatcher, UHFReaderViewNewApInput, byte_input_get_view(App->NewApInput));
+    App->NewApBuffer = (uint8_t*)malloc(4);
+
+    App->CurrentKpInput = byte_input_alloc();
+    view_dispatcher_add_view(
+        App->ViewDispatcher,
+        UHFReaderViewCurrentKpInput,
+        byte_input_get_view(App->CurrentKpInput));
+    App->CurrentKpBuffer = (uint8_t*)malloc(4);
+
+    App->NewKpInput = byte_input_alloc();
+    view_dispatcher_add_view(
+        App->ViewDispatcher, UHFReaderViewNewKpInput, byte_input_get_view(App->NewKpInput));
+    App->NewKpBuffer = (uint8_t*)malloc(4);
+}
+
+/**
+ * @brief      Frees the four ByteInput views allocated by update_pwd_views_alloc.
+*/
+void update_pwd_views_free(UHFReaderApp* App) {
+    view_dispatcher_remove_view(App->ViewDispatcher, UHFReaderViewCurrentApInput);
+    byte_input_free(App->CurrentApInput);
+    free(App->CurrentApBuffer);
+
+    view_dispatcher_remove_view(App->ViewDispatcher, UHFReaderViewNewApInput);
+    byte_input_free(App->NewApInput);
+    free(App->NewApBuffer);
+
+    view_dispatcher_remove_view(App->ViewDispatcher, UHFReaderViewCurrentKpInput);
+    byte_input_free(App->CurrentKpInput);
+    free(App->CurrentKpBuffer);
+
+    view_dispatcher_remove_view(App->ViewDispatcher, UHFReaderViewNewKpInput);
+    byte_input_free(App->NewKpInput);
+    free(App->NewKpBuffer);
+}
+
+/**
  * @brief      Allocates the lock view
  * @details    This function allocates all variables for the lock view.
  * @param      app  The UHFReaderApp object.
 */
 void view_lock_alloc(UHFReaderApp* App) {
     //Setting variables
-    App->SettingApLabel = "Set AP";
+    App->SettingApLabel = "AP";
     App->SetAccessPasswordPlaceHolder = strdup("Enter Access Password!");
     App->SettingApDefaultPassword = strdup("00000000");
 
@@ -351,6 +434,9 @@ void view_lock_alloc(UHFReaderApp* App) {
 
     //Allocating the set access password menu
     access_password_menu_alloc(App);
+
+    //Allocating the Update AP/KP byte input views
+    update_pwd_views_alloc(App);
 
     //Allocating the popup shown when locking the tags
     App->LockPopup = popup_alloc();
@@ -424,6 +510,7 @@ void view_lock_free(UHFReaderApp* App) {
     view_dispatcher_remove_view(App->ViewDispatcher, UHFReaderViewSetAccessPwd);
     byte_input_free(App->SetApInput);
     free(App->SetPwdTempBuffer);
+    update_pwd_views_free(App);
     view_dispatcher_remove_view(App->ViewDispatcher, UHFReaderViewLock);
     variable_item_list_free(App->VariableItemListLock);
 }
